@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import Wrapper from './Wrapper';
 import { configureStore } from '../../store/configureStore';
 import { Provider } from 'react-redux';
-import { locationService, setDataSourceSrv, setEchoSrv } from '@grafana/runtime';
+import { locationService, setDataSourceSrv } from '@grafana/runtime';
 import {
   ArrayDataFrame,
   DataQueryResponse,
@@ -15,7 +15,6 @@ import {
 } from '@grafana/data';
 import { selectors } from '@grafana/e2e-selectors';
 
-import { setTimeSrv } from '../dashboard/services/TimeSrv';
 import { from, Observable } from 'rxjs';
 import { LokiDatasource } from '../../plugins/datasource/loki/datasource';
 import { LokiQuery } from '../../plugins/datasource/loki/types';
@@ -26,7 +25,6 @@ import { splitOpen } from './state/main';
 import { Route, Router } from 'react-router-dom';
 import { GrafanaRoute } from 'app/core/navigation/GrafanaRoute';
 import { initialUserState } from '../profile/state/reducers';
-import { Echo } from 'app/core/services/echo/Echo';
 
 type Mock = jest.Mock;
 
@@ -324,14 +322,6 @@ function setup(options?: SetupOptions): { datasources: { [name: string]: DataSou
       return Promise.resolve((name ? dsSettings.find((d) => d.api.name === name) : dsSettings[0])!.api);
     },
   } as any);
-
-  setTimeSrv({
-    init() {},
-    getValidIntervals(intervals: string[]): string[] {
-      return intervals;
-    },
-  } as any);
-  setEchoSrv(new Echo());
 
   const store = configureStore();
   store.getState().user = {
