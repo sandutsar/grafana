@@ -12,11 +12,18 @@ awsconfig
 /emails/dist
 /reports
 /e2e/tmp
-.yarnrc
-.yarn/
 vendor/
 /docs/menu.yaml
 /requests
+
+# Yarn
+.yarn/*
+!.yarn/cache
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
 
 # Enterprise emails
 /emails/templates/enterprise_*
