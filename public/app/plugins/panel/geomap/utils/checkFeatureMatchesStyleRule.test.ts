@@ -1,5 +1,7 @@
 import { Feature } from 'ol';
-import { ComparisonOperation } from '../types';
+
+import { ComparisonOperation } from '@grafana/schema';
+
 import { checkFeatureMatchesStyleRule } from './checkFeatureMatchesStyleRule';
 
 describe('check if feature matches style rule', () => {
@@ -14,6 +16,16 @@ describe('check if feature matches style rule', () => {
           operation: ComparisonOperation.EQ,
           property: 'number',
           value: 3,
+        },
+        feature
+      )
+    ).toEqual(true);
+    expect(
+      checkFeatureMatchesStyleRule(
+        {
+          operation: ComparisonOperation.EQ,
+          property: 'number',
+          value: '3',
         },
         feature
       )

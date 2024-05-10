@@ -1,5 +1,6 @@
 import { from, Observable, of } from 'rxjs';
 import { mergeMap } from 'rxjs/operators';
+
 import {
   DataQuery,
   DataQueryRequest,
@@ -7,10 +8,11 @@ import {
   getDefaultTimeRange,
   LoadingState,
   PanelData,
+  QueryVariableModel,
   VariableSupportType,
 } from '@grafana/data';
 
-import { QueryVariableModel } from '../types';
+import { TimeSrv } from '../../dashboard/services/TimeSrv';
 import {
   hasCustomVariableSupport,
   hasDatasourceVariableSupport,
@@ -18,7 +20,6 @@ import {
   hasStandardVariableSupport,
 } from '../guard';
 import { getLegacyQueryOptions } from '../utils';
-import { TimeSrv } from '../../dashboard/services/TimeSrv';
 
 export interface RunnerArgs {
   variable: QueryVariableModel;
@@ -82,7 +83,7 @@ class LegacyQueryRunner implements QueryRunner {
       return getEmptyMetricFindValueObservable();
     }
 
-    const queryOptions: any = getLegacyQueryOptions(variable, searchFilter, timeSrv);
+    const queryOptions: any = getLegacyQueryOptions(variable, searchFilter, timeSrv, request.scopedVars);
 
     return from(datasource.metricFindQuery(variable.query, queryOptions)).pipe(
       mergeMap((values) => {
@@ -121,7 +122,7 @@ class StandardQueryRunner implements QueryRunner {
       return runRequest(datasource, request);
     }
 
-    return runRequest(datasource, request, datasource.variables.query);
+    return runRequest(datasource, request, datasource.variables.query.bind(datasource.variables));
   }
 }
 
@@ -145,7 +146,7 @@ class CustomQueryRunner implements QueryRunner {
       return getEmptyMetricFindValueObservable();
     }
 
-    return runRequest(datasource, request, datasource.variables.query);
+    return runRequest(datasource, request, datasource.variables.query.bind(datasource.variables));
   }
 }
 

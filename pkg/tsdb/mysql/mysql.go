@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,15 +16,13 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/datasource"
+	sdkhttpclient "github.com/grafana/grafana-plugin-sdk-go/backend/httpclient"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/instancemgmt"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
-	"github.com/grafana/grafana/pkg/infra/httpclient"
-	"github.com/grafana/grafana/pkg/infra/log"
-	"github.com/grafana/grafana/pkg/plugins"
-	"github.com/grafana/grafana/pkg/plugins/backendplugin/coreplugin"
-	"github.com/grafana/grafana/pkg/setting"
-	"github.com/grafana/grafana/pkg/tsdb/sqleng"
+
+	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
+	"github.com/grafana/grafana/pkg/tsdb/mysql/sqleng"
 )
 
 const (
@@ -32,48 +31,40 @@ const (
 	dateTimeFormat2 = "2006-01-02T15:04:05Z"
 )
 
-var logger = log.New("tsdb.mysql")
-
-type Service struct {
-	Cfg *setting.Cfg
-	im  instancemgmt.InstanceManager
-}
-
 func characterEscape(s string, escapeChar string) string {
 	return strings.ReplaceAll(s, escapeChar, url.QueryEscape(escapeChar))
 }
 
-func ProvideService(cfg *setting.Cfg, registrar plugins.CoreBackendRegistrar, httpClientProvider httpclient.Provider) (*Service, error) {
-	s := &Service{
-		im: datasource.NewInstanceManager(newInstanceSettings(cfg, httpClientProvider)),
-	}
-	factory := coreplugin.New(backend.ServeOpts{
-		QueryDataHandler: s,
-	})
-
-	if err := registrar.LoadAndRegister("mysql", factory); err != nil {
-		logger.Error("Failed to register plugin", "error", err)
-	}
-	return s, nil
-}
-
-func newInstanceSettings(cfg *setting.Cfg, httpClientProvider httpclient.Provider) datasource.InstanceFactoryFunc {
-	return func(settings backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
+func NewInstanceSettings(logger log.Logger) datasource.InstanceFactoryFunc {
+	return func(ctx context.Context, settings backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
+		cfg := backend.GrafanaConfigFromContext(ctx)
+		sqlCfg, err := cfg.SQL()
+		if err != nil {
+			return nil, err
+		}
 		jsonData := sqleng.JsonData{
-			MaxOpenConns:    0,
-			MaxIdleConns:    2,
-			ConnMaxLifetime: 14400,
+			MaxOpenConns:            sqlCfg.DefaultMaxOpenConns,
+			MaxIdleConns:            sqlCfg.DefaultMaxIdleConns,
+			ConnMaxLifetime:         sqlCfg.DefaultMaxConnLifetimeSeconds,
+			SecureDSProxy:           false,
+			AllowCleartextPasswords: false,
 		}
 
-		err := json.Unmarshal(settings.JSONData, &jsonData)
+		err = json.Unmarshal(settings.JSONData, &jsonData)
 		if err != nil {
 			return nil, fmt.Errorf("error reading settings: %w", err)
 		}
+
+		database := jsonData.Database
+		if database == "" {
+			database = settings.Database
+		}
+
 		dsInfo := sqleng.DataSourceInfo{
 			JsonData:                jsonData,
 			URL:                     settings.URL,
 			User:                    settings.User,
-			Database:                settings.Database,
+			Database:                database,
 			ID:                      settings.ID,
 			Updated:                 settings.Updated,
 			UID:                     settings.UID,
@@ -85,6 +76,25 @@ func newInstanceSettings(cfg *setting.Cfg, httpClientProvider httpclient.Provide
 			protocol = "unix"
 		}
 
+		proxyClient, err := settings.ProxyClient(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		// register the secure socks proxy dialer context, if enabled
+		if proxyClient.SecureSocksProxyEnabled() {
+			dialer, err := proxyClient.NewSecureSocksProxyContextDialer()
+			if err != nil {
+				return nil, err
+			}
+			// UID is only unique per org, the only way to ensure uniqueness is to do it by connection information
+			uniqueIdentifier := dsInfo.User + dsInfo.DecryptedSecureJSONData["password"] + dsInfo.URL + dsInfo.Database
+			protocol, err = registerProxyDialerContext(protocol, uniqueIdentifier, dialer)
+			if err != nil {
+				return nil, err
+			}
+		}
+
 		cnnstr := fmt.Sprintf("%s:%s@%s(%s)/%s?collation=utf8mb4_unicode_ci&parseTime=true&loc=UTC&allowNativePasswords=true",
 			characterEscape(dsInfo.User, ":"),
 			dsInfo.DecryptedSecureJSONData["password"],
@@ -93,12 +103,16 @@ func newInstanceSettings(cfg *setting.Cfg, httpClientProvider httpclient.Provide
 			characterEscape(dsInfo.Database, "?"),
 		)
 
-		opts, err := settings.HTTPClientOptions()
+		if dsInfo.JsonData.AllowCleartextPasswords {
+			cnnstr += "&allowCleartextPasswords=true"
+		}
+
+		opts, err := settings.HTTPClientOptions(ctx)
 		if err != nil {
 			return nil, err
 		}
 
-		tlsConfig, err := httpClientProvider.GetTLSConfig(opts)
+		tlsConfig, err := sdkhttpclient.GetTLSConfig(opts)
 		if err != nil {
 			return nil, err
 		}
@@ -115,62 +129,51 @@ func newInstanceSettings(cfg *setting.Cfg, httpClientProvider httpclient.Provide
 			cnnstr += fmt.Sprintf("&time_zone='%s'", url.QueryEscape(dsInfo.JsonData.Timezone))
 		}
 
-		if cfg.Env == setting.Dev {
-			logger.Debug("getEngine", "connection", cnnstr)
-		}
-
 		config := sqleng.DataPluginConfiguration{
-			DriverName:        "mysql",
-			ConnectionString:  cnnstr,
 			DSInfo:            dsInfo,
 			TimeColumnNames:   []string{"time", "time_sec"},
 			MetricColumnTypes: []string{"CHAR", "VARCHAR", "TINYTEXT", "TEXT", "MEDIUMTEXT", "LONGTEXT"},
-			RowLimit:          cfg.DataProxyRowLimit,
+			RowLimit:          sqlCfg.RowLimit,
+		}
+
+		userFacingDefaultError, err := cfg.UserFacingDefaultError()
+		if err != nil {
+			return nil, err
 		}
 
 		rowTransformer := mysqlQueryResultTransformer{
-			log: logger,
+			userError: userFacingDefaultError,
 		}
 
-		return sqleng.NewQueryDataHandler(config, &rowTransformer, newMysqlMacroEngine(logger), logger)
-	}
-}
+		db, err := sql.Open("mysql", cnnstr)
+		if err != nil {
+			return nil, err
+		}
 
-func (s *Service) getDataSourceHandler(pluginCtx backend.PluginContext) (*sqleng.DataSourceHandler, error) {
-	i, err := s.im.Get(pluginCtx)
-	if err != nil {
-		return nil, err
-	}
-	instance := i.(*sqleng.DataSourceHandler)
-	return instance, nil
-}
+		db.SetMaxOpenConns(config.DSInfo.JsonData.MaxOpenConns)
+		db.SetMaxIdleConns(config.DSInfo.JsonData.MaxIdleConns)
+		db.SetConnMaxLifetime(time.Duration(config.DSInfo.JsonData.ConnMaxLifetime) * time.Second)
 
-func (s *Service) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
-	dsHandler, err := s.getDataSourceHandler(req.PluginContext)
-	if err != nil {
-		return nil, err
+		return sqleng.NewQueryDataHandler(userFacingDefaultError, db, config, &rowTransformer, newMysqlMacroEngine(logger, userFacingDefaultError), logger)
 	}
-	return dsHandler.QueryData(ctx, req)
 }
 
 type mysqlQueryResultTransformer struct {
-	log log.Logger
+	userError string
 }
 
-func (t *mysqlQueryResultTransformer) TransformQueryError(err error) error {
+func (t *mysqlQueryResultTransformer) TransformQueryError(logger log.Logger, err error) error {
 	var driverErr *mysql.MySQLError
 	if errors.As(err, &driverErr) {
 		if driverErr.Number != mysqlerr.ER_PARSE_ERROR && driverErr.Number != mysqlerr.ER_BAD_FIELD_ERROR &&
 			driverErr.Number != mysqlerr.ER_NO_SUCH_TABLE {
-			t.log.Error("query error", "err", err)
-			return errQueryFailed
+			logger.Error("Query error", "error", err)
+			return fmt.Errorf(("query failed - %s"), t.userError)
 		}
 	}
 
 	return err
 }
-
-var errQueryFailed = errors.New("query failed - please inspect Grafana server log for details")
 
 func (t *mysqlQueryResultTransformer) GetConverterList() []sqlutil.StringConverter {
 	// For the MySQL driver , we have these possible data types:
@@ -184,7 +187,7 @@ func (t *mysqlQueryResultTransformer) GetConverterList() []sqlutil.StringConvert
 			ConversionFunc: func(in *string) (*string, error) { return in, nil },
 			Replacer: &sqlutil.StringFieldReplacer{
 				OutputFieldType: data.FieldTypeNullableFloat64,
-				ReplaceFunc: func(in *string) (interface{}, error) {
+				ReplaceFunc: func(in *string) (any, error) {
 					if in == nil {
 						return nil, nil
 					}
@@ -203,7 +206,7 @@ func (t *mysqlQueryResultTransformer) GetConverterList() []sqlutil.StringConvert
 			ConversionFunc: func(in *string) (*string, error) { return in, nil },
 			Replacer: &sqlutil.StringFieldReplacer{
 				OutputFieldType: data.FieldTypeNullableInt64,
-				ReplaceFunc: func(in *string) (interface{}, error) {
+				ReplaceFunc: func(in *string) (any, error) {
 					if in == nil {
 						return nil, nil
 					}
@@ -222,7 +225,7 @@ func (t *mysqlQueryResultTransformer) GetConverterList() []sqlutil.StringConvert
 			ConversionFunc: func(in *string) (*string, error) { return in, nil },
 			Replacer: &sqlutil.StringFieldReplacer{
 				OutputFieldType: data.FieldTypeNullableFloat64,
-				ReplaceFunc: func(in *string) (interface{}, error) {
+				ReplaceFunc: func(in *string) (any, error) {
 					if in == nil {
 						return nil, nil
 					}
@@ -241,7 +244,7 @@ func (t *mysqlQueryResultTransformer) GetConverterList() []sqlutil.StringConvert
 			ConversionFunc: func(in *string) (*string, error) { return in, nil },
 			Replacer: &sqlutil.StringFieldReplacer{
 				OutputFieldType: data.FieldTypeNullableTime,
-				ReplaceFunc: func(in *string) (interface{}, error) {
+				ReplaceFunc: func(in *string) (any, error) {
 					if in == nil {
 						return nil, nil
 					}
@@ -265,7 +268,7 @@ func (t *mysqlQueryResultTransformer) GetConverterList() []sqlutil.StringConvert
 			ConversionFunc: func(in *string) (*string, error) { return in, nil },
 			Replacer: &sqlutil.StringFieldReplacer{
 				OutputFieldType: data.FieldTypeNullableTime,
-				ReplaceFunc: func(in *string) (interface{}, error) {
+				ReplaceFunc: func(in *string) (any, error) {
 					if in == nil {
 						return nil, nil
 					}
@@ -292,7 +295,7 @@ func (t *mysqlQueryResultTransformer) GetConverterList() []sqlutil.StringConvert
 			ConversionFunc: func(in *string) (*string, error) { return in, nil },
 			Replacer: &sqlutil.StringFieldReplacer{
 				OutputFieldType: data.FieldTypeNullableTime,
-				ReplaceFunc: func(in *string) (interface{}, error) {
+				ReplaceFunc: func(in *string) (any, error) {
 					if in == nil {
 						return nil, nil
 					}
@@ -315,7 +318,7 @@ func (t *mysqlQueryResultTransformer) GetConverterList() []sqlutil.StringConvert
 			ConversionFunc: func(in *string) (*string, error) { return in, nil },
 			Replacer: &sqlutil.StringFieldReplacer{
 				OutputFieldType: data.FieldTypeNullableInt64,
-				ReplaceFunc: func(in *string) (interface{}, error) {
+				ReplaceFunc: func(in *string) (any, error) {
 					if in == nil {
 						return nil, nil
 					}
@@ -334,7 +337,7 @@ func (t *mysqlQueryResultTransformer) GetConverterList() []sqlutil.StringConvert
 			ConversionFunc: func(in *string) (*string, error) { return in, nil },
 			Replacer: &sqlutil.StringFieldReplacer{
 				OutputFieldType: data.FieldTypeNullableInt64,
-				ReplaceFunc: func(in *string) (interface{}, error) {
+				ReplaceFunc: func(in *string) (any, error) {
 					if in == nil {
 						return nil, nil
 					}
@@ -353,7 +356,7 @@ func (t *mysqlQueryResultTransformer) GetConverterList() []sqlutil.StringConvert
 			ConversionFunc: func(in *string) (*string, error) { return in, nil },
 			Replacer: &sqlutil.StringFieldReplacer{
 				OutputFieldType: data.FieldTypeNullableInt64,
-				ReplaceFunc: func(in *string) (interface{}, error) {
+				ReplaceFunc: func(in *string) (any, error) {
 					if in == nil {
 						return nil, nil
 					}
@@ -372,7 +375,7 @@ func (t *mysqlQueryResultTransformer) GetConverterList() []sqlutil.StringConvert
 			ConversionFunc: func(in *string) (*string, error) { return in, nil },
 			Replacer: &sqlutil.StringFieldReplacer{
 				OutputFieldType: data.FieldTypeNullableInt64,
-				ReplaceFunc: func(in *string) (interface{}, error) {
+				ReplaceFunc: func(in *string) (any, error) {
 					if in == nil {
 						return nil, nil
 					}
@@ -391,7 +394,7 @@ func (t *mysqlQueryResultTransformer) GetConverterList() []sqlutil.StringConvert
 			ConversionFunc: func(in *string) (*string, error) { return in, nil },
 			Replacer: &sqlutil.StringFieldReplacer{
 				OutputFieldType: data.FieldTypeNullableFloat64,
-				ReplaceFunc: func(in *string) (interface{}, error) {
+				ReplaceFunc: func(in *string) (any, error) {
 					if in == nil {
 						return nil, nil
 					}

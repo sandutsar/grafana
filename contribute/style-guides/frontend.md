@@ -166,16 +166,21 @@ interface ModalState {
 ##### Emotion class names
 
 ```typescript
-const getStyles  = = () => ({
+const getStyles = (theme: GrafanaTheme2) => ({
   // bad
   ElementWrapper: css`...`,
   // bad
-  ["element-wrapper"]: css`...`,
+  ['element-wrapper']: css`...`,
 
   // good
-  elementWrapper: css`...`,
+  elementWrapper: css({
+    padding: theme.spacing(1, 2),
+    background: theme.colors.background.secondary,
+  }),
 });
 ```
+
+Use hook useStyles2(getStyles) to memoize the styles generation and try to avoid passing props to the getStyles function and instead compose classes using emotion cx function.
 
 #### Use `ALL_CAPS` for constants.
 
@@ -255,6 +260,7 @@ Organize your code in a directory that encloses feature code:
 - Put React components in `components` directory (i.e. `features/my-feature/components/ButtonPeopleDreamOf.tsx`).
 - Put test files next to the test subject.
 - Put containers (pages) in feature root (i.e. `features/my-feature/DashboardPage.tsx`).
+- Put API function calls that isn't a redux thunk in an `api.ts` file within the same directory.
 - Subcomponents can live in the component folders. Small component do not need their own folder.
 - Component SASS styles should live in the same folder as component code.
 
@@ -347,11 +353,25 @@ static defaultProps: Partial<Props> = { ... }
 
 ### How to declare functional components
 
-We recommend using named regular functions when creating a new react functional component.
+We prefer using function declarations over function expressions when creating a new react functional component.
 
 ```typescript
-export function Component(props: Props): ReactElement { ... }
+// bad
+export const Component = (props: Props) => { ... }
+
+// bad
+export const Component: React.FC<Props> = (props) => { ... }
+
+// good
+export function Component(props: Props) { ... }
 ```
+
+Some interesting readings on the topic:
+
+- [Create React App: Remove React.FC from typescript template](https://github.com/facebook/create-react-app/pull/8177)
+- [Kent C. Dodds: How to write a React Component in Typescript](https://kentcdodds.com/blog/how-to-write-a-react-component-in-typescript)
+- [Kent C. Dodds: Function forms](https://kentcdodds.com/blog/function-forms)
+- [Sam Hendrickx: Why you probably shouldn't use React.FC?](https://medium.com/raccoons-group/why-you-probably-shouldnt-use-react-fc-to-type-your-react-components-37ca1243dd13)
 
 ## State management
 

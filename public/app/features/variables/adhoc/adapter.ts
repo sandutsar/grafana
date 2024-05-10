@@ -1,16 +1,16 @@
 import { cloneDeep } from 'lodash';
-import { getDataSourceSrv } from '@grafana/runtime';
-import { getDataSourceRef } from '@grafana/data';
 
-import { AdHocVariableModel } from '../types';
+import { AdHocVariableModel } from '@grafana/data';
+
 import { dispatch } from '../../../store/store';
 import { VariableAdapter } from '../adapters';
-import { AdHocPicker } from './picker/AdHocPicker';
-import { adHocVariableReducer, initialAdHocVariableModelState } from './reducer';
+import { toKeyedVariableIdentifier } from '../utils';
+
 import { AdHocVariableEditor } from './AdHocVariableEditor';
 import { setFiltersFromUrl } from './actions';
+import { AdHocPicker } from './picker/AdHocPicker';
+import { adHocVariableReducer, initialAdHocVariableModelState } from './reducer';
 import * as urlParser from './urlParser';
-import { isAdHoc, isLegacyAdHocDataSource } from '../guard';
 
 const noop = async () => {};
 
@@ -27,35 +27,16 @@ export const createAdHocVariableAdapter = (): VariableAdapter<AdHocVariableModel
     setValue: noop,
     setValueFromUrl: async (variable, urlValue) => {
       const filters = urlParser.toFilters(urlValue);
-      await dispatch(setFiltersFromUrl(variable.id, filters));
+      await dispatch(setFiltersFromUrl(toKeyedVariableIdentifier(variable), filters));
     },
     updateOptions: noop,
     getSaveModel: (variable) => {
-      const { index, id, state, global, ...rest } = cloneDeep(variable);
+      const { index, id, state, global, rootStateKey, ...rest } = cloneDeep(variable);
       return rest;
     },
     getValueForUrl: (variable) => {
       const filters = variable?.filters ?? [];
       return urlParser.toUrl(filters);
-    },
-    beforeAdding: (model) => {
-      if (!isAdHoc(model)) {
-        return model;
-      }
-
-      if (!isLegacyAdHocDataSource(model.datasource)) {
-        return model;
-      }
-
-      const ds = getDataSourceSrv().getInstanceSettings(model.datasource);
-      if (!ds) {
-        return model;
-      }
-
-      const clone = cloneDeep(model);
-      clone.datasource = getDataSourceRef(ds);
-
-      return { ...clone };
     },
   };
 };

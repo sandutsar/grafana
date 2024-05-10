@@ -5,7 +5,6 @@
  */
 export * from './utils';
 export * from './types';
-export * from './vector';
 export * from './dataframe';
 export * from './transformations';
 export * from './datetime';
@@ -16,15 +15,37 @@ export * from './events';
 export * from './themes';
 export * from './monaco';
 export * from './geo/layer';
+export * from './query';
 export {
-  ValueMatcherOptions,
-  BasicValueMatcherOptions,
-  RangeValueMatcherOptions,
+  type ValueMatcherOptions,
+  type BasicValueMatcherOptions,
+  type RangeValueMatcherOptions,
 } from './transformations/matchers/valueMatchers/types';
-export { LayoutModes, LayoutMode } from './types/layout';
-export { PanelPlugin, SetFieldConfigOptionsArgs, StandardOptionConfig } from './panel/PanelPlugin';
+export { LayoutModes, type LayoutMode } from './types/layout';
+export { PanelPlugin, type SetFieldConfigOptionsArgs, type StandardOptionConfig } from './panel/PanelPlugin';
+export {
+  getPanelOptionsWithDefaults,
+  filterFieldConfigOverrides,
+  restoreCustomOverrideRules,
+  isCustomFieldProp,
+  isStandardFieldProp,
+  type OptionDefaults,
+} from './panel/getPanelOptionsWithDefaults';
 export { createFieldConfigRegistry } from './panel/registryFactories';
-export { QueryRunner, QueryRunnerOptions } from './types/queryRunner';
+export { type QueryRunner, type QueryRunnerOptions } from './types/queryRunner';
+export { type GroupingToMatrixTransformerOptions } from './transformations/transformers/groupingToMatrix';
+export { type PluginContextType, type DataSourcePluginContextType } from './context/plugins/PluginContext';
+export { type PluginContextProviderProps, PluginContextProvider } from './context/plugins/PluginContextProvider';
+export {
+  type DataSourcePluginContextProviderProps,
+  DataSourcePluginContextProvider,
+} from './context/plugins/DataSourcePluginContextProvider';
+export { usePluginContext } from './context/plugins/usePluginContext';
+export { isDataSourcePluginContext } from './context/plugins/guards';
+export { getLinksSupplier } from './field/fieldOverrides';
 
-// Moved to `@grafana/schema`, in Grafana 9, this will be removed
-export * from './schema';
+// deprecated
+export { CircularVector } from './vector/CircularVector';
+export { vectorator } from './vector/FunctionalVector';
+export { ArrayVector } from './vector/ArrayVector';
+export * from './dataframe/CircularDataFrame';

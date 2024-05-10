@@ -1,31 +1,48 @@
-import React, { FC, useEffect } from 'react';
-import { Checkbox, Field, Input, InputControl, Select, TextArea } from '@grafana/ui';
-import { NotificationChannelOption } from 'app/types';
-import { useFormContext, FieldError, DeepMap } from 'react-hook-form';
-import { SubformField } from './SubformField';
 import { css } from '@emotion/css';
+import { isEmpty } from 'lodash';
+import React, { FC, useEffect } from 'react';
+import { useFormContext, FieldError, DeepMap, Controller } from 'react-hook-form';
+
+import { GrafanaTheme2 } from '@grafana/data';
+import { Checkbox, Field, Input, RadioButtonList, Select, TextArea, useStyles2 } from '@grafana/ui';
+import { NotificationChannelOption } from 'app/types';
+
 import { KeyValueMapInput } from './KeyValueMapInput';
-import { SubformArrayField } from './SubformArrayField';
 import { StringArrayInput } from './StringArrayInput';
+import { SubformArrayField } from './SubformArrayField';
+import { SubformField } from './SubformField';
 
 interface Props {
   defaultValue: any;
   option: NotificationChannelOption;
   invalid?: boolean;
   pathPrefix: string;
+  pathSuffix?: string;
   error?: FieldError | DeepMap<any, FieldError>;
   readOnly?: boolean;
+  customValidator?: (value: string) => boolean | string | Promise<boolean | string>;
 }
 
-export const OptionField: FC<Props> = ({ option, invalid, pathPrefix, error, defaultValue, readOnly = false }) => {
+export const OptionField: FC<Props> = ({
+  option,
+  invalid,
+  pathPrefix,
+  pathSuffix = '',
+  error,
+  defaultValue,
+  readOnly = false,
+  customValidator,
+}) => {
+  const optionPath = `${pathPrefix}${pathSuffix}`;
+
   if (option.element === 'subform') {
     return (
       <SubformField
         readOnly={readOnly}
         defaultValue={defaultValue}
         option={option}
-        errors={error as DeepMap<any, FieldError> | undefined}
-        pathPrefix={pathPrefix}
+        errors={error}
+        pathPrefix={optionPath}
       />
     );
   }
@@ -35,32 +52,44 @@ export const OptionField: FC<Props> = ({ option, invalid, pathPrefix, error, def
         readOnly={readOnly}
         defaultValues={defaultValue}
         option={option}
-        pathPrefix={pathPrefix}
+        pathPrefix={optionPath}
         errors={error as Array<DeepMap<any, FieldError>> | undefined}
       />
     );
   }
   return (
     <Field
-      label={option.element !== 'checkbox' ? option.label : undefined}
+      label={option.element !== 'checkbox' && option.element !== 'radio' ? option.label : undefined}
       description={option.description || undefined}
       invalid={!!error}
       error={error?.message}
+      data-testid={`${optionPath}${option.propertyName}`}
     >
       <OptionInput
-        id={`${pathPrefix}${option.propertyName}`}
+        id={`${optionPath}${option.propertyName}`}
         defaultValue={defaultValue}
         option={option}
         invalid={invalid}
-        pathPrefix={pathPrefix}
+        pathPrefix={optionPath}
         readOnly={readOnly}
+        pathIndex={pathPrefix}
+        customValidator={customValidator}
       />
     </Field>
   );
 };
 
-const OptionInput: FC<Props & { id: string }> = ({ option, invalid, id, pathPrefix = '', readOnly = false }) => {
-  const { control, register, unregister } = useFormContext();
+const OptionInput: FC<Props & { id: string; pathIndex?: string }> = ({
+  option,
+  invalid,
+  id,
+  pathPrefix = '',
+  pathIndex = '',
+  readOnly = false,
+  customValidator,
+}) => {
+  const styles = useStyles2(getStyles);
+  const { control, register, unregister, getValues } = useFormContext();
   const name = `${pathPrefix}${option.propertyName}`;
 
   // workaround for https://github.com/react-hook-form/react-hook-form/issues/4993#issuecomment-829012506
@@ -87,12 +116,17 @@ const OptionInput: FC<Props & { id: string }> = ({ option, invalid, id, pathPref
       return (
         <Input
           id={id}
-          readOnly={readOnly}
+          readOnly={readOnly || determineReadOnly(option, getValues, pathIndex)}
           invalid={invalid}
           type={option.inputType}
           {...register(name, {
-            required: option.required ? 'Required' : false,
-            validate: (v) => (option.validationRule !== '' ? validateOption(v, option.validationRule) : true),
+            required: determineRequired(option, getValues, pathIndex),
+            validate: {
+              validationRule: (v) =>
+                option.validationRule ? validateOption(v, option.validationRule, option.required) : true,
+              customValidator: (v) => (customValidator ? customValidator(v) : true),
+            },
+            setValueAs: option.setValueAs,
           })}
           placeholder={option.placeholder}
         />
@@ -100,37 +134,65 @@ const OptionInput: FC<Props & { id: string }> = ({ option, invalid, id, pathPref
 
     case 'select':
       return (
-        <InputControl
+        <Controller
           render={({ field: { onChange, ref, ...field } }) => (
             <Select
               disabled={readOnly}
-              menuShouldPortal
-              {...field}
               options={option.selectOptions ?? undefined}
               invalid={invalid}
               onChange={(value) => onChange(value.value)}
+              {...field}
             />
           )}
           control={control}
           name={name}
+          defaultValue={option.defaultValue}
+          rules={{
+            validate: {
+              customValidator: (v) => (customValidator ? customValidator(v) : true),
+            },
+          }}
         />
       );
-
+    case 'radio':
+      return (
+        <>
+          <legend className={styles.legend}>{option.label}</legend>
+          <Controller
+            render={({ field: { ref, ...field } }) => (
+              <RadioButtonList disabled={readOnly} options={option.selectOptions ?? []} {...field} />
+            )}
+            control={control}
+            defaultValue={option.defaultValue?.value}
+            name={name}
+            rules={{
+              required: option.required ? 'Option is required' : false,
+              validate: {
+                validationRule: (v) =>
+                  option.validationRule ? validateOption(v, option.validationRule, option.required) : true,
+                customValidator: (v) => (customValidator ? customValidator(v) : true),
+              },
+            }}
+          />
+        </>
+      );
     case 'textarea':
       return (
         <TextArea
           id={id}
           readOnly={readOnly}
           invalid={invalid}
+          placeholder={option.placeholder}
           {...register(name, {
             required: option.required ? 'Required' : false,
-            validate: (v) => (option.validationRule !== '' ? validateOption(v, option.validationRule) : true),
+            validate: (v) =>
+              option.validationRule !== '' ? validateOption(v, option.validationRule, option.required) : true,
           })}
         />
       );
     case 'string_array':
       return (
-        <InputControl
+        <Controller
           render={({ field: { value, onChange } }) => (
             <StringArrayInput readOnly={readOnly} value={value} onChange={onChange} />
           )}
@@ -140,7 +202,7 @@ const OptionInput: FC<Props & { id: string }> = ({ option, invalid, id, pathPref
       );
     case 'key_value_map':
       return (
-        <InputControl
+        <Controller
           render={({ field: { value, onChange } }) => (
             <KeyValueMapInput readOnly={readOnly} value={value} onChange={onChange} />
           )}
@@ -155,12 +217,43 @@ const OptionInput: FC<Props & { id: string }> = ({ option, invalid, id, pathPref
   }
 };
 
-const styles = {
-  checkbox: css`
-    height: auto; // native chekbox has fixed height which does not take into account description
-  `,
+const getStyles = (theme: GrafanaTheme2) => ({
+  checkbox: css({
+    height: 'auto', // native checkbox has fixed height which does not take into account description
+  }),
+  legend: css({
+    fontSize: theme.typography.h6.fontSize,
+  }),
+});
+
+const validateOption = (value: string, validationRule: string, required: boolean) => {
+  if (value === '' && !required) {
+    return true;
+  }
+
+  return RegExp(validationRule).test(value) ? true : 'Invalid format';
 };
 
-const validateOption = (value: string, validationRule: string) => {
-  return RegExp(validationRule).test(value) ? true : 'Invalid format';
+const determineRequired = (option: NotificationChannelOption, getValues: any, pathIndex: string) => {
+  if (!option.dependsOn) {
+    return option.required ? 'Required' : false;
+  }
+  if (isEmpty(getValues(`${pathIndex}secureFields`))) {
+    const dependentOn = getValues(`${pathIndex}secureSettings.${option.dependsOn}`);
+    return !Boolean(dependentOn) && option.required ? 'Required' : false;
+  } else {
+    const dependentOn: boolean = getValues(`${pathIndex}secureFields.${option.dependsOn}`);
+    return !dependentOn && option.required ? 'Required' : false;
+  }
+};
+
+const determineReadOnly = (option: NotificationChannelOption, getValues: any, pathIndex: string) => {
+  if (!option.dependsOn) {
+    return false;
+  }
+  if (isEmpty(getValues(`${pathIndex}secureFields`))) {
+    return getValues(`${pathIndex}secureSettings.${option.dependsOn}`);
+  } else {
+    return getValues(`${pathIndex}secureFields.${option.dependsOn}`);
+  }
 };

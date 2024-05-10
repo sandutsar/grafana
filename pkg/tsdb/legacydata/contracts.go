@@ -7,26 +7,28 @@ import (
 	"fmt"
 
 	"github.com/grafana/grafana-plugin-sdk-go/data"
+
 	"github.com/grafana/grafana/pkg/components/null"
 	"github.com/grafana/grafana/pkg/components/simplejson"
-	"github.com/grafana/grafana/pkg/models"
+	"github.com/grafana/grafana/pkg/services/datasources"
+	"github.com/grafana/grafana/pkg/services/user"
 )
 
 // RequestHandler is a data request handler interface.
 // Deprecated: use backend.QueryDataHandler instead.
 type RequestHandler interface {
 	// HandleRequest handles a data request.
-	HandleRequest(context.Context, *models.DataSource, DataQuery) (DataResponse, error)
+	HandleRequest(context.Context, *datasources.DataSource, DataQuery) (DataResponse, error)
 }
 
 // DataSubQuery represents a data sub-query.  New work should use the plugin SDK.
 type DataSubQuery struct {
-	RefID         string             `json:"refId"`
-	Model         *simplejson.Json   `json:"model,omitempty"`
-	DataSource    *models.DataSource `json:"datasource"`
-	MaxDataPoints int64              `json:"maxDataPoints"`
-	IntervalMS    int64              `json:"intervalMs"`
-	QueryType     string             `json:"queryType"`
+	RefID         string                  `json:"refId"`
+	Model         *simplejson.Json        `json:"model,omitempty"`
+	DataSource    *datasources.DataSource `json:"datasource"`
+	MaxDataPoints int64                   `json:"maxDataPoints"`
+	IntervalMS    int64                   `json:"intervalMs"`
+	QueryType     string                  `json:"queryType"`
 }
 
 // DataQuery contains all information about a data query request.  New work should use the plugin SDK.
@@ -35,7 +37,7 @@ type DataQuery struct {
 	Queries   []DataSubQuery
 	Headers   map[string]string
 	Debug     bool
-	User      *models.SignedInUser
+	User      *user.SignedInUser
 }
 
 type DataTable struct {
@@ -50,7 +52,7 @@ type DataTableColumn struct {
 type DataTimePoint [2]null.Float
 type DataTimeSeriesPoints []DataTimePoint
 type DataTimeSeriesSlice []DataTimeSeries
-type DataRowValues []interface{}
+type DataRowValues []any
 
 // Deprecated: DataQueryResult should use backend.QueryDataResponse
 type DataQueryResult struct {
@@ -67,7 +69,7 @@ type DataQueryResult struct {
 //
 // Deserialization support is required by tests.
 func (r *DataQueryResult) UnmarshalJSON(b []byte) error {
-	m := map[string]interface{}{}
+	m := map[string]any{}
 	if err := json.Unmarshal(b, &m); err != nil {
 		return err
 	}
@@ -78,7 +80,7 @@ func (r *DataQueryResult) UnmarshalJSON(b []byte) error {
 	}
 	var meta *simplejson.Json
 	if m["meta"] != nil {
-		mm, ok := m["meta"].(map[string]interface{})
+		mm, ok := m["meta"].(map[string]any)
 		if !ok {
 			return fmt.Errorf("can't decode field meta - not a JSON object")
 		}
@@ -91,22 +93,22 @@ func (r *DataQueryResult) UnmarshalJSON(b []byte) error {
 	*/
 	var tables []DataTable
 	if m["tables"] != nil {
-		ts, ok := m["tables"].([]interface{})
+		ts, ok := m["tables"].([]any)
 		if !ok {
 			return fmt.Errorf("can't decode field tables - not an array of Tables")
 		}
 		for _, ti := range ts {
-			tm, ok := ti.(map[string]interface{})
+			tm, ok := ti.(map[string]any)
 			if !ok {
 				return fmt.Errorf("can't decode field tables - not an array of Tables")
 			}
 			var columns []DataTableColumn
-			cs, ok := tm["columns"].([]interface{})
+			cs, ok := tm["columns"].([]any)
 			if !ok {
 				return fmt.Errorf("can't decode field tables - not an array of Tables")
 			}
 			for _, ci := range cs {
-				cm, ok := ci.(map[string]interface{})
+				cm, ok := ci.(map[string]any)
 				if !ok {
 					return fmt.Errorf("can't decode field tables - not an array of Tables")
 				}
@@ -118,13 +120,13 @@ func (r *DataQueryResult) UnmarshalJSON(b []byte) error {
 				columns = append(columns, DataTableColumn{Text: val})
 			}
 
-			rs, ok := tm["rows"].([]interface{})
+			rs, ok := tm["rows"].([]any)
 			if !ok {
 				return fmt.Errorf("can't decode field tables - not an array of Tables")
 			}
 			var rows []DataRowValues
 			for _, ri := range rs {
-				vals, ok := ri.([]interface{})
+				vals, ok := ri.([]any)
 				if !ok {
 					return fmt.Errorf("can't decode field tables - not an array of Tables")
 				}
@@ -140,7 +142,7 @@ func (r *DataQueryResult) UnmarshalJSON(b []byte) error {
 
 	var dfs *dataFrames
 	if m["dataframes"] != nil {
-		raw, ok := m["dataframes"].([]interface{})
+		raw, ok := m["dataframes"].([]any)
 		if !ok {
 			return fmt.Errorf("can't decode field dataframes - not an array of byte arrays")
 		}

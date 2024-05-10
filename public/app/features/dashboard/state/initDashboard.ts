@@ -1,37 +1,48 @@
-// Services & Utils
+import { DataQuery, locationUtil, setWeekStart, DashboardLoadedEvent } from '@grafana/data';
+import { config, isFetchError, locationService } from '@grafana/runtime';
+import { notifyApp } from 'app/core/actions';
+import appEvents from 'app/core/app_events';
 import { createErrorNotification } from 'app/core/copy/appNotification';
 import { backendSrv } from 'app/core/services/backend_srv';
-import { DashboardSrv, getDashboardSrv } from 'app/features/dashboard/services/DashboardSrv';
+import { KeybindingSrv } from 'app/core/services/keybindingSrv';
+import store from 'app/core/store';
+import { startMeasure, stopMeasure } from 'app/core/utils/metrics';
 import { dashboardLoaderSrv } from 'app/features/dashboard/services/DashboardLoaderSrv';
+import { DashboardSrv, getDashboardSrv } from 'app/features/dashboard/services/DashboardSrv';
 import { getTimeSrv, TimeSrv } from 'app/features/dashboard/services/TimeSrv';
-import { keybindingSrv } from 'app/core/services/keybindingSrv';
-// Actions
-import { notifyApp } from 'app/core/actions';
 import {
-  clearDashboardQueriesToUpdateOnLoad,
-  dashboardInitCompleted,
-  dashboardInitFailed,
-  dashboardInitFetching,
-  dashboardInitServices,
-  dashboardInitSlow,
-} from './reducers';
-// Types
-import { DashboardDTO, DashboardInitPhase, DashboardRoutes, StoreState, ThunkDispatch, ThunkResult } from 'app/types';
-import { DashboardModel } from './DashboardModel';
-import { DataQuery, locationUtil, setWeekStart } from '@grafana/data';
-import { initVariablesTransaction } from '../../variables/state/actions';
-import { emitDashboardViewEvent } from './analyticsProcessor';
+  HOME_DASHBOARD_CACHE_KEY,
+  getDashboardScenePageStateManager,
+} from 'app/features/dashboard-scene/pages/DashboardScenePageStateManager';
+import { buildNewDashboardSaveModel } from 'app/features/dashboard-scene/serialization/buildNewDashboardSaveModel';
+import { getFolderByUid } from 'app/features/folders/state/actions';
 import { dashboardWatcher } from 'app/features/live/dashboard/dashboardWatcher';
-import { config, locationService } from '@grafana/runtime';
+import { playlistSrv } from 'app/features/playlist/PlaylistSrv';
+import { toStateKey } from 'app/features/variables/utils';
+import { DashboardDTO, DashboardInitPhase, DashboardRoutes, StoreState, ThunkDispatch, ThunkResult } from 'app/types';
+
 import { createDashboardQueryRunner } from '../../query/state/DashboardQueryRunner/DashboardQueryRunner';
+import { initVariablesTransaction } from '../../variables/state/actions';
+import { getIfExistsLastKey } from '../../variables/state/selectors';
+import { trackDashboardLoaded } from '../utils/tracking';
+
+import { DashboardModel } from './DashboardModel';
+import { PanelModel } from './PanelModel';
+import { emitDashboardViewEvent } from './analyticsProcessor';
+import { dashboardInitCompleted, dashboardInitFailed, dashboardInitFetching, dashboardInitServices } from './reducers';
+
+const INIT_DASHBOARD_MEASUREMENT = 'initDashboard';
 
 export interface InitDashboardArgs {
   urlUid?: string;
   urlSlug?: string;
   urlType?: string;
-  urlFolderId?: string | null;
+  urlFolderUid?: string;
+  panelType?: string;
+  accessToken?: string;
   routeName?: string;
   fixUrl: boolean;
+  keybindingSrv: KeybindingSrv;
 }
 
 async function fetchDashboard(
@@ -39,9 +50,23 @@ async function fetchDashboard(
   dispatch: ThunkDispatch,
   getState: () => StoreState
 ): Promise<DashboardDTO | null> {
+  // When creating new or adding panels to a dashboard from explore we load it from local storage
+  const model = store.getObject<DashboardDTO>(DASHBOARD_FROM_LS_KEY);
+  if (model) {
+    removeDashboardToFetchFromLocalStorage();
+    return model;
+  }
+
   try {
     switch (args.routeName) {
       case DashboardRoutes.Home: {
+        const stateManager = getDashboardScenePageStateManager();
+        const cachedDashboard = stateManager.getFromCache(HOME_DASHBOARD_CACHE_KEY);
+
+        if (cachedDashboard) {
+          return cachedDashboard;
+        }
+
         // load home dash
         const dashDTO: DashboardDTO = await backendSrv.get('/api/dashboards/home');
 
@@ -58,10 +83,24 @@ async function fetchDashboard(
         dashDTO.meta.canStar = false;
         return dashDTO;
       }
+      case DashboardRoutes.Public: {
+        return await dashboardLoaderSrv.loadDashboard('public', args.urlSlug, args.accessToken);
+      }
       case DashboardRoutes.Normal: {
         const dashDTO: DashboardDTO = await dashboardLoaderSrv.loadDashboard(args.urlType, args.urlSlug, args.urlUid);
 
-        if (args.fixUrl && dashDTO.meta.url) {
+        // only the folder API has information about ancestors
+        // get parent folder (if it exists) and put it in the store
+        // this will be used to populate the full breadcrumb trail
+        if (dashDTO.meta.folderUid) {
+          try {
+            await dispatch(getFolderByUid(dashDTO.meta.folderUid));
+          } catch (err) {
+            console.warn('Error fetching parent folder', dashDTO.meta.folderUid, 'for dashboard', err);
+          }
+        }
+
+        if (args.fixUrl && dashDTO.meta.url && !playlistSrv.state.isPlaying) {
           // check if the current url is correct (might be old slug)
           const dashboardUrl = locationUtil.stripBaseFromUrl(dashDTO.meta.url);
           const currentPath = locationService.getLocation().pathname;
@@ -78,14 +117,24 @@ async function fetchDashboard(
         return dashDTO;
       }
       case DashboardRoutes.New: {
-        return getNewDashboardModelData(args.urlFolderId);
+        // only the folder API has information about ancestors
+        // get parent folder (if it exists) and put it in the store
+        // this will be used to populate the full breadcrumb trail
+        if (args.urlFolderUid) {
+          await dispatch(getFolderByUid(args.urlFolderUid));
+        }
+        return await buildNewDashboardSaveModel(args.urlFolderUid);
+      }
+      case DashboardRoutes.Path: {
+        const path = args.urlSlug ?? '';
+        return await dashboardLoaderSrv.loadDashboard(DashboardRoutes.Path, path, path);
       }
       default:
         throw { message: 'Unknown route ' + args.routeName };
     }
   } catch (err) {
     // Ignore cancelled errors
-    if (err.cancelled) {
+    if (isFetchError(err) && err.cancelled) {
       return null;
     }
 
@@ -94,6 +143,28 @@ async function fetchDashboard(
     return null;
   }
 }
+
+const getQueriesByDatasource = (
+  panels: PanelModel[],
+  queries: { [datasourceId: string]: DataQuery[] } = {}
+): { [datasourceId: string]: DataQuery[] } => {
+  panels.forEach((panel) => {
+    if (panel.panels) {
+      getQueriesByDatasource(panel.panels, queries);
+    } else if (panel.targets) {
+      panel.targets.forEach((target) => {
+        if (target.datasource?.type) {
+          if (queries[target.datasource.type]) {
+            queries[target.datasource.type].push(target);
+          } else {
+            queries[target.datasource.type] = [target];
+          }
+        }
+      });
+    }
+  });
+  return queries;
+};
 
 /**
  * This action (or saga) does everything needed to bootstrap a dashboard & dashboard model.
@@ -106,19 +177,15 @@ async function fetchDashboard(
  */
 export function initDashboard(args: InitDashboardArgs): ThunkResult<void> {
   return async (dispatch, getState) => {
+    startMeasure(INIT_DASHBOARD_MEASUREMENT);
+
     // set fetching state
     dispatch(dashboardInitFetching());
 
-    // Detect slow loading / initializing and set state flag
-    // This is in order to not show loading indication for fast loading dashboards as it creates blinking/flashing
-    setTimeout(() => {
-      if (getState().dashboard.getModel() === null) {
-        dispatch(dashboardInitSlow());
-      }
-    }, 500);
-
     // fetch dashboard data
     const dashDTO = await fetchDashboard(args, dispatch, getState);
+
+    const versionBeforeMigration = dashDTO?.dashboard?.version;
 
     // returns null if there was a redirect or error
     if (!dashDTO) {
@@ -156,20 +223,16 @@ export function initDashboard(args: InitDashboardArgs): ThunkResult<void> {
 
     timeSrv.init(dashboard);
 
-    if (storeState.dashboard.modifiedQueries) {
-      const { panelId, queries } = storeState.dashboard.modifiedQueries;
-      dashboard.meta.fromExplore = !!(panelId && queries);
-    }
-
+    const dashboardUid = toStateKey(args.urlUid ?? dashboard.uid);
     // template values service needs to initialize completely before the rest of the dashboard can load
-    await dispatch(initVariablesTransaction(args.urlUid!, dashboard));
+    await dispatch(initVariablesTransaction(dashboardUid, dashboard));
 
     // DashboardQueryRunner needs to run after all variables have been resolved so that any annotation query including a variable
     // will be correctly resolved
     const runner = createDashboardQueryRunner({ dashboard, timeSrv });
     runner.run({ dashboard, range: timeSrv.timeRange() });
 
-    if (getState().templating.transaction.uid !== args.urlUid) {
+    if (getIfExistsLastKey(getState()) !== dashboardUid) {
       // if a previous dashboard has slow running variable queries the batch uid will be the new one
       // but the args.urlUid will be the same as before initVariablesTransaction was called so then we can't continue initializing
       // the previous dashboard.
@@ -189,15 +252,14 @@ export function initDashboard(args: InitDashboardArgs): ThunkResult<void> {
         dashboard.autoFitPanels(window.innerHeight, queryParams.kiosk);
       }
 
-      keybindingSrv.setupDashboardBindings(dashboard);
+      if (!config.publicDashboardAccessToken) {
+        args.keybindingSrv.setupDashboardBindings(dashboard);
+      }
     } catch (err) {
-      dispatch(notifyApp(createErrorNotification('Dashboard init failed', err)));
+      if (err instanceof Error) {
+        dispatch(notifyApp(createErrorNotification('Dashboard init failed', err)));
+      }
       console.error(err);
-    }
-
-    if (storeState.dashboard.modifiedQueries) {
-      const { panelId, queries } = storeState.dashboard.modifiedQueries;
-      updateQueriesWhenComingFromExplore(dispatch, dashboard, panelId, queries);
     }
 
     // send open dashboard event
@@ -217,50 +279,31 @@ export function initDashboard(args: InitDashboardArgs): ThunkResult<void> {
       setWeekStart(config.bootData.user.weekStart);
     }
 
+    // Propagate an app-wide event about the dashboard being loaded
+    appEvents.publish(
+      new DashboardLoadedEvent({
+        dashboardId: dashboard.uid,
+        orgId: storeState.user.orgId,
+        userId: storeState.user.user?.id,
+        grafanaVersion: config.buildInfo.version,
+        queries: getQueriesByDatasource(dashboard.panels),
+      })
+    );
+
+    const measure = stopMeasure(INIT_DASHBOARD_MEASUREMENT);
+    trackDashboardLoaded(dashboard, measure?.duration, versionBeforeMigration);
+
     // yay we are done
     dispatch(dashboardInitCompleted(dashboard));
   };
 }
 
-function getNewDashboardModelData(urlFolderId?: string | null): any {
-  const data = {
-    meta: {
-      canStar: false,
-      canShare: false,
-      isNew: true,
-      folderId: 0,
-    },
-    dashboard: {
-      title: 'New dashboard',
-      panels: [
-        {
-          type: 'add-panel',
-          gridPos: { x: 0, y: 0, w: 12, h: 9 },
-          title: 'Panel Title',
-        },
-      ],
-    },
-  };
+export const DASHBOARD_FROM_LS_KEY = 'DASHBOARD_FROM_LS_KEY';
 
-  if (urlFolderId) {
-    data.meta.folderId = parseInt(urlFolderId, 10);
-  }
-
-  return data;
+export function setDashboardToFetchFromLocalStorage(model: DashboardDTO) {
+  store.setObject(DASHBOARD_FROM_LS_KEY, model);
 }
 
-function updateQueriesWhenComingFromExplore(
-  dispatch: ThunkDispatch,
-  dashboard: DashboardModel,
-  originPanelId: number,
-  queries: DataQuery[]
-) {
-  const panelArrId = dashboard.panels.findIndex((panel) => panel.id === originPanelId);
-
-  if (panelArrId > -1) {
-    dashboard.panels[panelArrId].targets = queries;
-  }
-
-  // Clear update state now that we're done
-  dispatch(clearDashboardQueriesToUpdateOnLoad());
+export function removeDashboardToFetchFromLocalStorage() {
+  store.delete(DASHBOARD_FROM_LS_KEY);
 }

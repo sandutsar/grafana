@@ -1,21 +1,28 @@
+import React from 'react';
+
 import {
   EventBusSrv,
   EventBus,
   DashboardCursorSync,
   AnnotationEventUIModel,
   ThresholdsConfig,
-  SplitOpen,
   CoreApp,
+  DataFrame,
+  DataLinkPostProcessor,
 } from '@grafana/data';
-import React from 'react';
-import { SeriesVisibilityChangeMode } from '.';
+
+import { AdHocFilterItem } from '../Table/types';
+
+import { SeriesVisibilityChangeMode } from './types';
 
 /** @alpha */
 export interface PanelContext {
+  /** Identifier for the events scope */
+  eventsScope: string;
   eventBus: EventBus;
 
   /** Dashboard panels sync */
-  sync?: DashboardCursorSync;
+  sync?: () => DashboardCursorSync;
 
   /** Information on what the outer container is */
   app?: CoreApp | 'string';
@@ -30,9 +37,16 @@ export interface PanelContext {
   onToggleSeriesVisibility?: (label: string, mode: SeriesVisibilityChangeMode) => void;
 
   canAddAnnotations?: () => boolean;
+  canEditAnnotations?: (dashboardUID?: string) => boolean;
+  canDeleteAnnotations?: (dashboardUID?: string) => boolean;
   onAnnotationCreate?: (annotation: AnnotationEventUIModel) => void;
   onAnnotationUpdate?: (annotation: AnnotationEventUIModel) => void;
   onAnnotationDelete?: (id: string) => void;
+
+  /**
+   * Used from visualizations like Table to add ad-hoc filters from cell values
+   */
+  onAddAdHocFilter?: (item: AdHocFilterItem) => void;
 
   /**
    * Enables modifying thresholds directly from the panel
@@ -42,17 +56,18 @@ export interface PanelContext {
   canEditThresholds?: boolean;
 
   /**
+   * Shows threshold indicators on the right-hand side of the panel
+   *
+   * @alpha -- experimental
+   */
+  showThresholds?: boolean;
+
+  /**
    * Called when a panel wants to change default thresholds configuration
    *
    * @alpha -- experimental
    */
   onThresholdsChange?: (thresholds: ThresholdsConfig) => void;
-
-  /**
-   * onSplitOpen is used in Explore to open the split view. It can be used in panels which has intercations and used in Explore as well.
-   * For example TimeSeries panel.
-   */
-  onSplitOpen?: SplitOpen;
 
   /** For instance state that can be shared between panel & options UI  */
   instanceState?: any;
@@ -64,9 +79,22 @@ export interface PanelContext {
    * Called when a panel is changing the sort order of the legends.
    */
   onToggleLegendSort?: (sortBy: string) => void;
+
+  /**
+   * Optional, only some contexts support this. This action can be cancelled by user which will result
+   * in a the Promise resolving to a false value.
+   */
+  onUpdateData?: (frames: DataFrame[]) => Promise<boolean>;
+
+  /**
+   * Optional supplier for internal data links. If not provided a link pointing to Explore will be generated.
+   * @internal
+   */
+  dataLinkPostProcessor?: DataLinkPostProcessor;
 }
 
 export const PanelContextRoot = React.createContext<PanelContext>({
+  eventsScope: 'global',
   eventBus: new EventBusSrv(),
 });
 

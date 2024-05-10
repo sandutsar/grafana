@@ -1,6 +1,14 @@
+import { ExpressionDatasourceRef } from '@grafana/runtime/src/utils/DataSourceWithBackend';
 import { ClassicCondition, ExpressionQuery } from 'app/features/expressions/types';
 import { AlertQuery } from 'app/types/unified-alerting-dto';
-import { queriesWithUpdatedReferences, updateMathExpressionRefs } from './util';
+
+import {
+  checkForPathSeparator,
+  findRenamedDataQueryReferences,
+  getThresholdsForQueries,
+  queriesWithUpdatedReferences,
+  updateMathExpressionRefs,
+} from './util';
 
 describe('rule-editor', () => {
   const dataSource: AlertQuery = {
@@ -18,15 +26,12 @@ describe('rule-editor', () => {
 
   const classicCondition = {
     refId: 'B',
-    datasourceUid: '-100',
+    datasourceUid: '__expr__',
     queryType: '',
     model: {
       refId: 'B',
       type: 'classic_conditions',
-      datasource: {
-        uid: '-100',
-        type: 'grafana-expression',
-      },
+      datasource: ExpressionDatasourceRef,
       conditions: [
         {
           type: 'query',
@@ -51,15 +56,12 @@ describe('rule-editor', () => {
 
   const mathExpression = {
     refId: 'B',
-    datasourceUid: '-100',
+    datasourceUid: '__expr__',
     queryType: '',
     model: {
       refId: 'B',
       type: 'math',
-      datasource: {
-        uid: '-100',
-        type: 'grafana-expression',
-      },
+      datasource: ExpressionDatasourceRef,
       conditions: [],
       expression: 'abs($A) + $A',
     },
@@ -67,15 +69,12 @@ describe('rule-editor', () => {
 
   const reduceExpression = {
     refId: 'B',
-    datasourceUid: '-100',
+    datasourceUid: '__expr__',
     queryType: '',
     model: {
       refId: 'B',
       type: 'reduce',
-      datasource: {
-        uid: '-100',
-        type: 'grafana-expression',
-      },
+      datasource: ExpressionDatasourceRef,
       conditions: [],
       reducer: 'mean',
       expression: 'A',
@@ -84,7 +83,7 @@ describe('rule-editor', () => {
 
   const resampleExpression = {
     refId: 'A',
-    datasourceUid: '-100',
+    datasourceUid: '__expr__',
     model: {
       refId: 'A',
       type: 'resample',
@@ -97,6 +96,28 @@ describe('rule-editor', () => {
       upsampler: 'fillna',
       expression: 'A',
       window: '30m',
+    },
+    queryType: '',
+  };
+
+  const thresholdExpression = {
+    refId: 'C',
+    datasourceUid: '__expr__',
+    model: {
+      refId: 'C',
+      type: 'threshold',
+      expression: 'B',
+      datasource: {
+        type: '__expr__',
+        uid: '__expr__',
+      },
+      conditions: [
+        {
+          evaluator: {
+            params: [0, 'gt'],
+          },
+        },
+      ],
     },
     queryType: '',
   };
@@ -140,6 +161,14 @@ describe('rule-editor', () => {
       expect(queryModel.expression).toBe('C');
     });
 
+    it('should rewire threshold expressions', () => {
+      const queries: AlertQuery[] = [dataSource, reduceExpression, thresholdExpression];
+      const rewiredQueries = queriesWithUpdatedReferences(queries, 'B', 'REDUCER');
+
+      const queryModel = rewiredQueries[2].model as ExpressionQuery;
+      expect(queryModel.expression).toBe('REDUCER');
+    });
+
     it('should rewire multiple expressions', () => {
       const queries: AlertQuery[] = [dataSource, mathExpression, resampleExpression];
       const rewiredQueries = queriesWithUpdatedReferences(queries, 'A', 'C');
@@ -156,6 +185,35 @@ describe('rule-editor', () => {
       expect(rewiredQueries[1]).toEqual(queries[1]);
       expect(rewiredQueries[2]).toEqual(queries[2]);
     });
+
+    it('should not rewire non-referencing expressions', () => {
+      const dataSource1 = { ...dataSource, refId: 'Q1' };
+      const dataSource2 = { ...dataSource, refId: 'Q2' };
+      const condition1 = {
+        ...classicCondition,
+        refId: 'A',
+        model: {
+          ...classicCondition.model,
+          conditions: [
+            {
+              ...classicCondition.model.conditions[0],
+              query: { params: ['Q1'] },
+            },
+          ],
+        },
+      };
+      const condition2 = { ...reduceExpression, refId: 'B', model: { ...reduceExpression.model, expression: 'Q1' } };
+      const condition3 = { ...mathExpression, refId: 'C', model: { ...mathExpression.model, expression: '${Q1}' } };
+
+      const queries: AlertQuery[] = [dataSource1, dataSource2, condition1, condition2, condition3];
+      const rewiredQueries = queriesWithUpdatedReferences(queries, 'Q2', 'Q3');
+
+      expect(rewiredQueries[0]).toEqual(queries[0]);
+      expect(rewiredQueries[1]).toEqual(queries[1]);
+      expect(rewiredQueries[2]).toEqual(queries[2]);
+      expect(rewiredQueries[3]).toEqual(queries[3]);
+      expect(rewiredQueries[4]).toEqual(queries[4]);
+    });
   });
 
   describe('updateMathExpressionRefs', () => {
@@ -165,5 +223,217 @@ describe('rule-editor', () => {
     it('should rewire refs with brackets', () => {
       expect(updateMathExpressionRefs('abs(${Foo}) + $Foo', 'Foo', 'Bar')).toBe('abs(${Bar}) + ${Bar}');
     });
+    it('should not rewire refs with partial variable match', () => {
+      expect(updateMathExpressionRefs('$A3 + $B', 'A', 'C')).toBe('$A3 + $B');
+    });
+  });
+});
+
+describe('checkForPathSeparator', () => {
+  it('should not allow strings with /', () => {
+    expect(checkForPathSeparator('foo / bar')).not.toBe(true);
+    expect(typeof checkForPathSeparator('foo / bar')).toBe('string');
+  });
+  it('should not allow strings with \\', () => {
+    expect(checkForPathSeparator('foo \\ bar')).not.toBe(true);
+    expect(typeof checkForPathSeparator('foo \\ bar')).toBe('string');
+  });
+  it('should allow anything without / or \\', () => {
+    expect(checkForPathSeparator('foo bar')).toBe(true);
+  });
+});
+
+describe('getThresholdsForQueries', () => {
+  it('should work for threshold condition', () => {
+    const [queries, condition] = createThresholdExample('gt');
+    expect(getThresholdsForQueries(queries, condition)).toMatchSnapshot();
+  });
+
+  it('should work for classic_condition', () => {
+    const [[dataQuery]] = createThresholdExample('gt');
+
+    const classicCondition = {
+      refId: 'B',
+      datasourceUid: '__expr__',
+      queryType: '',
+      model: {
+        refId: 'B',
+        type: 'classic_conditions',
+        datasource: ExpressionDatasourceRef,
+        conditions: [
+          {
+            type: 'query',
+            evaluator: {
+              params: [0],
+              type: 'gt',
+            },
+            operator: {
+              type: 'and',
+            },
+            query: {
+              params: ['A'],
+            },
+            reducer: {
+              params: [],
+              type: 'last',
+            },
+          },
+        ],
+      },
+    };
+
+    const thresholdsClassic = getThresholdsForQueries([dataQuery, classicCondition], classicCondition.refId);
+    expect(thresholdsClassic).toMatchSnapshot();
+  });
+
+  it('should not throw if no refId exists', () => {
+    const dataQuery: AlertQuery = {
+      refId: 'A',
+      datasourceUid: 'abc123',
+      queryType: '',
+      relativeTimeRange: {
+        from: 600,
+        to: 0,
+      },
+      model: {
+        refId: 'A',
+      },
+    };
+
+    const classicCondition = {
+      refId: 'B',
+      datasourceUid: '__expr__',
+      queryType: '',
+      model: {
+        refId: 'B',
+        type: 'classic_conditions',
+        datasource: ExpressionDatasourceRef,
+        conditions: [
+          {
+            type: 'query',
+            evaluator: {
+              params: [0],
+              type: 'gt',
+            },
+            operator: {
+              type: 'and',
+            },
+            query: {
+              params: [''],
+            },
+            reducer: {
+              params: [],
+              type: 'last',
+            },
+          },
+        ],
+      },
+    };
+
+    expect(() => {
+      const thresholds = getThresholdsForQueries([dataQuery, classicCondition], classicCondition.refId);
+      expect(thresholds).toStrictEqual({});
+    }).not.toThrowError();
+  });
+
+  it('should work for within_range', () => {
+    const [queries, condition] = createThresholdExample('within_range');
+    const thresholds = getThresholdsForQueries(queries, condition);
+    expect(thresholds).toMatchSnapshot();
+  });
+
+  it('should work for lt and gt', () => {
+    const [gtQueries, qtCondition] = createThresholdExample('gt');
+    const [ltQueries, ltCondition] = createThresholdExample('lt');
+    expect(getThresholdsForQueries(gtQueries, qtCondition)).toMatchSnapshot();
+    expect(getThresholdsForQueries(ltQueries, ltCondition)).toMatchSnapshot();
+  });
+
+  it('should work for outside_range', () => {
+    const [queries, condition] = createThresholdExample('outside_range');
+    const thresholds = getThresholdsForQueries(queries, condition);
+    expect(thresholds).toMatchSnapshot();
+  });
+});
+
+function createThresholdExample(thresholdType: string): [AlertQuery[], string] {
+  const dataQuery: AlertQuery = {
+    refId: 'A',
+    datasourceUid: 'abc123',
+    queryType: '',
+    relativeTimeRange: {
+      from: 600,
+      to: 0,
+    },
+    model: {
+      refId: 'A',
+    },
+  };
+
+  const reduceExpression = {
+    refId: 'B',
+    datasourceUid: '__expr__',
+    queryType: '',
+    model: {
+      refId: 'B',
+      type: 'reduce',
+      datasource: ExpressionDatasourceRef,
+      conditions: [],
+      reducer: 'mean',
+      expression: 'A',
+    },
+  };
+
+  const thresholdExpression = {
+    refId: 'C',
+    datasourceUid: '__expr__',
+    queryType: '',
+    model: {
+      refId: 'C',
+      type: 'threshold',
+      datasource: ExpressionDatasourceRef,
+      conditions: [
+        {
+          type: 'query',
+          evaluator: {
+            params: [0, 10],
+            type: thresholdType ?? 'gt',
+          },
+        },
+      ],
+      expression: 'B',
+    },
+  };
+
+  return [[dataQuery, reduceExpression, thresholdExpression], thresholdExpression.refId];
+}
+
+describe('findRenamedReferences', () => {
+  it('should find the renamed ids', () => {
+    const previous = [{ refId: 'A' }, { refId: 'B' }, { refId: 'C' }] as AlertQuery[];
+    const updated = [{ refId: 'FOO' }, { refId: 'B' }, { refId: 'C' }] as AlertQuery[];
+
+    expect(findRenamedDataQueryReferences(previous, updated)).toEqual(['A', 'FOO']);
+  });
+
+  it('should ignore expression queries', () => {
+    // @ts-expect-error
+    const previous = [
+      { refId: 'A' },
+      { refId: 'REDUCE', model: { datasource: '-100' } },
+      { refId: 'MATH', model: { datasource: '-100' } },
+      { refId: 'B' },
+      { refId: 'C' },
+    ] as AlertQuery[];
+
+    // @ts-expect-error
+    const updated = [
+      { refId: 'FOO' },
+      { refId: 'REDUCE', model: { datasource: '-100' } },
+      { refId: 'B' },
+      { refId: 'C' },
+    ] as AlertQuery[];
+
+    expect(findRenamedDataQueryReferences(previous, updated)).toEqual(['A', 'FOO']);
   });
 });

@@ -1,25 +1,27 @@
+import { isNumber } from 'lodash';
+import { FeatureLike } from 'ol/Feature';
+import Map from 'ol/Map';
+import VectorLayer from 'ol/layer/Vector';
 import React, { ReactNode } from 'react';
+import { ReplaySubject } from 'rxjs';
+
 import {
   MapLayerRegistryItem,
   MapLayerOptions,
   PanelData,
   GrafanaTheme2,
   FrameGeometrySourceMode,
+  EventBus,
 } from '@grafana/data';
-import Map from 'ol/Map';
-import Feature from 'ol/Feature';
-import { Point } from 'ol/geom';
-import * as layer from 'ol/layer';
-import * as source from 'ol/source';
-import { dataFrameToPoints, getLocationMatchers } from '../../utils/location';
-import { getScaledDimension, getColorDimension, getTextDimension, getScalarDimension } from 'app/features/dimensions';
+import { FrameVectorSource } from 'app/features/geo/utils/frameVectorSource';
+import { getLocationMatchers } from 'app/features/geo/utils/location';
+
+import { MarkersLegend, MarkersLegendProps } from '../../components/MarkersLegend';
 import { ObservablePropsWrapper } from '../../components/ObservablePropsWrapper';
-import { MarkersLegend, MarkersLegendProps } from './MarkersLegend';
-import { ReplaySubject } from 'rxjs';
-import { getFeatures } from '../../utils/getFeatures';
-import { defaultStyleConfig, StyleConfig, StyleDimensions } from '../../style/types';
-import { StyleEditor } from './StyleEditor';
+import { StyleEditor } from '../../editor/StyleEditor';
+import { defaultStyleConfig, StyleConfig } from '../../style/types';
 import { getStyleConfigState } from '../../style/utils';
+import { getStyleDimension} from '../../utils/utils';
 
 // Configuration options for Circle overlays
 export interface MarkersConfig {
@@ -42,6 +44,7 @@ export const defaultMarkersConfig: MapLayerOptions<MarkersConfig> = {
   location: {
     mode: FrameGeometrySourceMode.Auto,
   },
+  tooltip: true,
 };
 
 /**
@@ -50,22 +53,30 @@ export const defaultMarkersConfig: MapLayerOptions<MarkersConfig> = {
 export const markersLayer: MapLayerRegistryItem<MarkersConfig> = {
   id: MARKERS_LAYER_ID,
   name: 'Markers',
-  description: 'use markers to render each data point',
+  description: 'Use markers to render each data point',
   isBaseMap: false,
   showLocation: true,
+  hideOpacity: true,
 
   /**
    * Function that configures transformation and returns a transformer
+   * @param map
    * @param options
+   * @param theme
    */
-  create: async (map: Map, options: MapLayerOptions<MarkersConfig>, theme: GrafanaTheme2) => {
-    const matchers = await getLocationMatchers(options.location);
-    const vectorLayer = new layer.Vector({});
+  create: async (map: Map, options: MapLayerOptions<MarkersConfig>, eventBus: EventBus, theme: GrafanaTheme2) => {
     // Assert default values
     const config = {
       ...defaultOptions,
       ...options?.config,
     };
+
+    const style = await getStyleConfigState(config.style);
+    const location = await getLocationMatchers(options.location);
+    const source = new FrameVectorSource(location);
+    const vectorLayer = new VectorLayer({
+      source,
+    });
 
     const legendProps = new ReplaySubject<MarkersLegendProps>(1);
     let legend: ReactNode = null;
@@ -73,10 +84,33 @@ export const markersLayer: MapLayerRegistryItem<MarkersConfig> = {
       legend = <ObservablePropsWrapper watch={legendProps} initialSubProps={{}} child={MarkersLegend} />;
     }
 
-    // Set the default style
-    const style = await getStyleConfigState(config.style);
     if (!style.fields) {
+      // Set a global style
       vectorLayer.setStyle(style.maker(style.base));
+    } else {
+      vectorLayer.setStyle((feature: FeatureLike) => {
+        const idx: number = feature.get('rowIndex');
+        const dims = style.dims;
+        if (!dims || !isNumber(idx)) {
+          return style.maker(style.base);
+        }
+
+        const values = { ...style.base };
+
+        if (dims.color) {
+          values.color = dims.color.get(idx);
+        }
+        if (dims.size) {
+          values.size = dims.size.get(idx);
+        }
+        if (dims.text) {
+          values.text = dims.text.get(idx);
+        }
+        if (dims.rotation) {
+          values.rotation = dims.rotation.get(idx);
+        }
+        return style.maker(values);
+      });
     }
 
     return {
@@ -84,54 +118,26 @@ export const markersLayer: MapLayerRegistryItem<MarkersConfig> = {
       legend: legend,
       update: (data: PanelData) => {
         if (!data.series?.length) {
+          source.clear();
           return; // ignore empty
         }
 
-        const features: Feature<Point>[] = [];
-
         for (const frame of data.series) {
-          const info = dataFrameToPoints(frame, matchers);
-          if (info.warning) {
-            console.log('Could not find locations', info.warning);
-            continue; // ???
-          }
-
-          if (style.fields) {
-            const dims: StyleDimensions = {};
-            if (style.fields.color) {
-              dims.color = getColorDimension(frame, style.config.color ?? defaultStyleConfig.color, theme);
-            }
-            if (style.fields.size) {
-              dims.size = getScaledDimension(frame, style.config.size ?? defaultStyleConfig.size);
-            }
-            if (style.fields.text) {
-              dims.text = getTextDimension(frame, style.config.text!);
-            }
-            if (style.fields.rotation) {
-              dims.rotation = getScalarDimension(frame, style.config.rotation ?? defaultStyleConfig.rotation);
-            }
-            style.dims = dims;
-          }
-
-          const frameFeatures = getFeatures(frame, info, style);
-
-          if (frameFeatures) {
-            features.push(...frameFeatures);
-          }
+          style.dims = getStyleDimension(frame, style, theme);
 
           // Post updates to the legend component
           if (legend) {
             legendProps.next({
-              color: style.dims?.color,
+              styleConfig: style,
               size: style.dims?.size,
+              layerName: options.name,
+              layer: vectorLayer,
             });
           }
+
+          source.update(frame);
           break; // Only the first frame for now!
         }
-
-        // Source reads the data and provides a set of features to visualize
-        const vectorSource = new source.Vector({ features });
-        vectorLayer.setSource(vectorSource);
       },
 
       // Marker overlay options
@@ -150,7 +156,7 @@ export const markersLayer: MapLayerRegistryItem<MarkersConfig> = {
           .addBooleanSwitch({
             path: 'config.showLegend',
             name: 'Show legend',
-            description: 'Show legend',
+            description: 'Show map legend',
             defaultValue: defaultOptions.showLegend,
           });
       },

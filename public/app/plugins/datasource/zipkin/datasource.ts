@@ -1,6 +1,6 @@
 import { lastValueFrom, Observable, of } from 'rxjs';
 import { map } from 'rxjs/operators';
-import { BackendSrvRequest, FetchResponse, getBackendSrv } from '@grafana/runtime';
+
 import {
   DataQueryRequest,
   DataQueryResponse,
@@ -8,15 +8,17 @@ import {
   DataSourceInstanceSettings,
   DataSourceJsonData,
   FieldType,
-  MutableDataFrame,
+  createDataFrame,
+  ScopedVars,
+  urlUtil,
 } from '@grafana/data';
+import { NodeGraphOptions, SpanBarOptions } from '@grafana/o11y-ds-frontend';
+import { BackendSrvRequest, FetchResponse, getBackendSrv, getTemplateSrv, TemplateSrv } from '@grafana/runtime';
 
-import { serializeParams } from '../../../core/utils/fetch';
 import { apiPrefix } from './constants';
 import { ZipkinQuery, ZipkinSpan } from './types';
 import { createGraphFrames } from './utils/graphTransform';
 import { transformResponse } from './utils/transforms';
-import { NodeGraphOptions } from 'app/core/components/NodeGraphSettings';
 
 export interface ZipkinJsonData extends DataSourceJsonData {
   nodeGraph?: NodeGraphOptions;
@@ -25,7 +27,11 @@ export interface ZipkinJsonData extends DataSourceJsonData {
 export class ZipkinDatasource extends DataSourceApi<ZipkinQuery, ZipkinJsonData> {
   uploadedJson: string | ArrayBuffer | null = null;
   nodeGraph?: NodeGraphOptions;
-  constructor(private instanceSettings: DataSourceInstanceSettings<ZipkinJsonData>) {
+  spanBar?: SpanBarOptions;
+  constructor(
+    private instanceSettings: DataSourceInstanceSettings<ZipkinJsonData>,
+    private readonly templateSrv: TemplateSrv = getTemplateSrv()
+  ) {
     super(instanceSettings);
     this.nodeGraph = instanceSettings.jsonData.nodeGraph;
   }
@@ -46,14 +52,15 @@ export class ZipkinDatasource extends DataSourceApi<ZipkinQuery, ZipkinJsonData>
     }
 
     if (target.query) {
-      return this.request<ZipkinSpan[]>(`${apiPrefix}/trace/${encodeURIComponent(target.query)}`).pipe(
+      const query = this.applyVariables(target, options.scopedVars);
+      return this.request<ZipkinSpan[]>(`${apiPrefix}/trace/${encodeURIComponent(query.query)}`).pipe(
         map((res) => responseToDataQueryResponse(res, this.nodeGraph?.enabled))
       );
     }
     return of(emptyDataQueryResponse);
   }
 
-  async metadataRequest(url: string, params?: Record<string, any>): Promise<any> {
+  async metadataRequest(url: string, params?: Record<string, unknown>) {
     const res = await lastValueFrom(this.request(url, params, { hideFromInspector: true }));
     return res.data;
   }
@@ -67,12 +74,35 @@ export class ZipkinDatasource extends DataSourceApi<ZipkinQuery, ZipkinJsonData>
     return query.query;
   }
 
+  interpolateVariablesInQueries(queries: ZipkinQuery[], scopedVars: ScopedVars): ZipkinQuery[] {
+    if (!queries || queries.length === 0) {
+      return [];
+    }
+
+    return queries.map((query) => {
+      return {
+        ...query,
+        datasource: this.getRef(),
+        ...this.applyVariables(query, scopedVars),
+      };
+    });
+  }
+
+  applyVariables(query: ZipkinQuery, scopedVars: ScopedVars) {
+    const expandedQuery = { ...query };
+
+    return {
+      ...expandedQuery,
+      query: this.templateSrv.replace(query.query ?? '', scopedVars),
+    };
+  }
+
   private request<T = any>(
     apiUrl: string,
-    data?: any,
+    data?: unknown,
     options?: Partial<BackendSrvRequest>
   ): Observable<FetchResponse<T>> {
-    const params = data ? serializeParams(data) : '';
+    const params = data ? urlUtil.serializeParams(data) : '';
     const url = `${this.instanceSettings.url}${apiUrl}${params.length ? `?${params}` : ''}`;
     const req = {
       ...options,
@@ -95,7 +125,7 @@ function responseToDataQueryResponse(response: { data: ZipkinSpan[] }, nodeGraph
 
 const emptyDataQueryResponse = {
   data: [
-    new MutableDataFrame({
+    createDataFrame({
       fields: [
         {
           name: 'trace',

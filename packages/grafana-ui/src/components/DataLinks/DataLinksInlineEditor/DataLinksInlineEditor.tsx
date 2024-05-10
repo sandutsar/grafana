@@ -1,12 +1,15 @@
-import { DataFrame, DataLink, GrafanaTheme2, VariableSuggestion } from '@grafana/data';
-import React, { useState } from 'react';
 import { css } from '@emotion/css';
-import { Button } from '../../Button/Button';
 import { cloneDeep } from 'lodash';
+import React, { useState } from 'react';
+
+import { DataFrame, DataLink, GrafanaTheme2, VariableSuggestion } from '@grafana/data';
+
+import { useStyles2 } from '../../../themes';
+import { Button } from '../../Button/Button';
 import { Modal } from '../../Modal/Modal';
-import { stylesFactory, useTheme2 } from '../../../themes';
-import { DataLinksListItem } from './DataLinksListItem';
+
 import { DataLinkEditorModalContent } from './DataLinkEditorModalContent';
+import { DataLinksListItem } from './DataLinksListItem';
 
 interface DataLinksInlineEditorProps {
   links?: DataLink[];
@@ -15,17 +18,11 @@ interface DataLinksInlineEditorProps {
   data: DataFrame[];
 }
 
-export const DataLinksInlineEditor: React.FC<DataLinksInlineEditorProps> = ({
-  links,
-  onChange,
-  getSuggestions,
-  data,
-}) => {
-  const theme = useTheme2();
+export const DataLinksInlineEditor = ({ links, onChange, getSuggestions, data }: DataLinksInlineEditorProps) => {
   const [editIndex, setEditIndex] = useState<number | null>(null);
   const [isNew, setIsNew] = useState(false);
 
-  const styles = getDataLinksInlineEditorStyles(theme);
+  const styles = useStyles2(getDataLinksInlineEditorStyles);
   const linksSafe: DataLink[] = links ?? [];
   const isEditing = editIndex !== null;
 
@@ -112,10 +109,8 @@ export const DataLinksInlineEditor: React.FC<DataLinksInlineEditorProps> = ({
   );
 };
 
-const getDataLinksInlineEditorStyles = stylesFactory((theme: GrafanaTheme2) => {
-  return {
-    wrapper: css`
-      margin-bottom: ${theme.spacing(2)};
-    `,
-  };
+const getDataLinksInlineEditorStyles = (theme: GrafanaTheme2) => ({
+  wrapper: css({
+    marginBottom: theme.spacing(2),
+  }),
 });

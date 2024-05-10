@@ -1,6 +1,7 @@
+import { Story } from '@storybook/react';
 import React from 'react';
 import { ValidateResult } from 'react-hook-form';
-import { Story } from '@storybook/react';
+
 import {
   Field,
   Legend,
@@ -14,13 +15,14 @@ import {
   TextArea,
   RadioButtonGroup,
 } from '@grafana/ui';
-import { withCenteredStory } from '../../utils/storybook/withCenteredStory';
+
 import { withStoryContainer } from '../../utils/storybook/withStoryContainer';
+
 import mdx from './Form.mdx';
 
 export default {
   title: 'Forms/Form',
-  decorators: [withStoryContainer, withCenteredStory],
+  decorators: [withStoryContainer],
   parameters: {
     docs: {
       page: mdx,
@@ -64,8 +66,9 @@ const renderForm = (defaultValues?: FormDTO) => (
       console.log(data);
     }}
   >
-    {({ register, control, errors }) =>
-      (console.log(errors) as any) || (
+    {({ register, control, errors }) => {
+      console.log(errors);
+      return (
         <>
           <Legend>Edit user</Legend>
 
@@ -111,14 +114,14 @@ const renderForm = (defaultValues?: FormDTO) => (
               rules={{
                 required: true,
               }}
-              render={({ field }) => <Select menuShouldPortal {...field} options={selectOptions} />}
+              render={({ field }) => <Select {...field} options={selectOptions} />}
             />
           </Field>
 
           <Button type="submit">Update</Button>
         </>
-      )
-    }
+      );
+    }}
   </Form>
 );
 
@@ -150,8 +153,9 @@ export const AsyncValidation: Story = ({ passAsyncValidation }) => {
           alert('Submitted successfully!');
         }}
       >
-        {({ register, control, errors, formState }) =>
-          (console.log(errors) as any) || (
+        {({ register, control, errors, formState }) => {
+          console.log(errors);
+          return (
             <>
               <Legend>Edit user</Legend>
 
@@ -166,8 +170,8 @@ export const AsyncValidation: Story = ({ passAsyncValidation }) => {
                 Submit
               </Button>
             </>
-          )
-        }
+          );
+        }}
       </Form>
     </>
   );

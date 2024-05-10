@@ -7,14 +7,14 @@ import (
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
-	"github.com/grafana/grafana/pkg/infra/log"
 
 	"github.com/stretchr/testify/require"
 )
 
 func TestMacroEngine(t *testing.T) {
 	engine := &mySQLMacroEngine{
-		logger: log.New("test"),
+		logger:    backend.NewLoggerWith("logger", "test"),
+		userError: "inspect Grafana server log for details",
 	}
 	query := &backend.DataQuery{}
 
@@ -129,7 +129,7 @@ func TestMacroEngine(t *testing.T) {
 			sql, err := engine.Interpolate(query, timeRange, "WHERE $__timeFilter(time_column)")
 			require.Nil(t, err)
 
-			require.Equal(t, fmt.Sprintf("WHERE time_column BETWEEN FROM_UNIXTIME(%d) AND FROM_UNIXTIME(%d)", from.Unix(), to.Unix()), sql)
+			require.Equal(t, fmt.Sprintf("WHERE time_column BETWEEN DATE_ADD(FROM_UNIXTIME(0), INTERVAL %d SECOND) AND FROM_UNIXTIME(%d)", from.Unix(), to.Unix()), sql)
 		})
 
 		t.Run("interpolate __unixEpochFilter function", func(t *testing.T) {
@@ -152,7 +152,7 @@ func TestMacroEngine(t *testing.T) {
 			sql, err := engine.Interpolate(query, timeRange, "WHERE $__timeFilter(time_column)")
 			require.Nil(t, err)
 
-			require.Equal(t, fmt.Sprintf("WHERE time_column BETWEEN FROM_UNIXTIME(%d) AND FROM_UNIXTIME(%d)", from.Unix(), to.Unix()), sql)
+			require.Equal(t, fmt.Sprintf("WHERE time_column BETWEEN DATE_ADD(FROM_UNIXTIME(0), INTERVAL %d SECOND) AND FROM_UNIXTIME(%d)", from.Unix(), to.Unix()), sql)
 		})
 
 		t.Run("interpolate __unixEpochFilter function", func(t *testing.T) {
@@ -193,7 +193,7 @@ func TestMacroEngine(t *testing.T) {
 }
 
 func TestMacroEngineConcurrency(t *testing.T) {
-	engine := newMysqlMacroEngine(log.New("test"))
+	engine := newMysqlMacroEngine(backend.NewLoggerWith("logger", "test"), "error")
 	query1 := backend.DataQuery{
 		JSON: []byte{},
 	}

@@ -1,15 +1,18 @@
-import React from 'react';
-import { Router } from 'react-router-dom';
 import { render, RenderResult, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { Provider } from 'react-redux';
+import React from 'react';
+import { TestProvider } from 'test/helpers/TestProvider';
+
+import { PluginType, escapeStringForRegex } from '@grafana/data';
 import { locationService } from '@grafana/runtime';
-import { PluginType } from '@grafana/data';
 import { getRouteComponentProps } from 'app/core/navigation/__mocks__/routeProps';
+import { RouteDescriptor } from 'app/core/navigation/types';
 import { configureStore } from 'app/store/configureStore';
+
+import { getCatalogPluginMock, getPluginsStateMock } from '../__mocks__';
 import { fetchRemotePlugins } from '../state/actions';
 import { PluginAdminRoutes, CatalogPlugin, ReducerState, RequestStatus } from '../types';
-import { getCatalogPluginMock, getPluginsStateMock } from '../__mocks__';
+
 import BrowsePage from './Browse';
 
 jest.mock('@grafana/runtime', () => {
@@ -30,37 +33,37 @@ const renderBrowse = (
   const store = configureStore({ plugins: pluginsStateOverride || getPluginsStateMock(plugins) });
   locationService.push(path);
   const props = getRouteComponentProps({
-    route: { routeName: PluginAdminRoutes.Home } as any,
+    route: { routeName: PluginAdminRoutes.Home } as RouteDescriptor,
   });
 
   return render(
-    <Provider store={store}>
-      <Router history={locationService.getHistory()}>
-        <BrowsePage {...props} />
-      </Router>
-    </Provider>
+    <TestProvider store={store}>
+      <BrowsePage {...props} />
+    </TestProvider>
   );
 };
 
 describe('Browse list of plugins', () => {
   describe('when filtering', () => {
-    it('should list installed plugins by default', async () => {
+    it('should list all plugins (including core plugins) by default', async () => {
       const { queryByText } = renderBrowse('/plugins', [
         getCatalogPluginMock({ id: 'plugin-1', name: 'Plugin 1', isInstalled: true }),
         getCatalogPluginMock({ id: 'plugin-2', name: 'Plugin 2', isInstalled: true }),
-        getCatalogPluginMock({ id: 'plugin-3', name: 'Plugin 3', isInstalled: true }),
-        getCatalogPluginMock({ id: 'plugin-4', name: 'Plugin 4', isInstalled: false }),
+        getCatalogPluginMock({ id: 'plugin-3', name: 'Plugin 3', isInstalled: false }),
+        getCatalogPluginMock({ id: 'plugin-4', name: 'Plugin 4', isInstalled: true, isCore: true }),
       ]);
 
       await waitFor(() => expect(queryByText('Plugin 1')).toBeInTheDocument());
-      expect(queryByText('Plugin 1')).toBeInTheDocument();
       expect(queryByText('Plugin 2')).toBeInTheDocument();
+
+      // Plugins which are not installed should still be listed
       expect(queryByText('Plugin 3')).toBeInTheDocument();
 
-      expect(queryByText('Plugin 4')).toBeNull();
+      // Core plugins should still be listed
+      expect(queryByText('Plugin 4')).toBeInTheDocument();
     });
 
-    it('should list all plugins (except core plugins) when filtering by all', async () => {
+    it('should list all plugins (including core plugins) when filtering by all', async () => {
       const { queryByText } = renderBrowse('/plugins?filterBy=all&filterByType=all', [
         getCatalogPluginMock({ id: 'plugin-1', name: 'Plugin 1', isInstalled: true }),
         getCatalogPluginMock({ id: 'plugin-2', name: 'Plugin 2', isInstalled: false }),
@@ -72,8 +75,8 @@ describe('Browse list of plugins', () => {
       expect(queryByText('Plugin 2')).toBeInTheDocument();
       expect(queryByText('Plugin 3')).toBeInTheDocument();
 
-      // Core plugins should not be listed
-      expect(queryByText('Plugin 4')).not.toBeInTheDocument();
+      // Core plugins should still be listed
+      expect(queryByText('Plugin 4')).toBeInTheDocument();
     });
 
     it('should list installed plugins (including core plugins) when filtering by installed', async () => {
@@ -182,17 +185,72 @@ describe('Browse list of plugins', () => {
 
   describe('when searching', () => {
     it('should only list plugins matching search', async () => {
-      const { queryByText } = renderBrowse('/plugins?filterBy=all&q=zabbix', [
-        getCatalogPluginMock({ id: 'zabbix', name: 'Zabbix' }),
-        getCatalogPluginMock({ id: 'plugin-2', name: 'Plugin 2' }),
-        getCatalogPluginMock({ id: 'plugin-3', name: 'Plugin 3' }),
+      const { queryByText } = renderBrowse('/plugins?filterBy=all&q=matches', [
+        getCatalogPluginMock({ id: 'matches-the-search', name: 'Matches the search' }),
+        getCatalogPluginMock({
+          id: 'plugin-2',
+          name: 'Plugin 2',
+        }),
+        getCatalogPluginMock({
+          id: 'plugin-3',
+          name: 'Plugin 3',
+        }),
       ]);
 
-      await waitFor(() => expect(queryByText('Zabbix')).toBeInTheDocument());
+      await waitFor(() => expect(queryByText('Matches the search')).toBeInTheDocument());
 
       // Other plugin types shouldn't be shown
       expect(queryByText('Plugin 2')).not.toBeInTheDocument();
       expect(queryByText('Plugin 3')).not.toBeInTheDocument();
+    });
+
+    it('should handle escaped regex characters in the search query (e.g. "(" )', async () => {
+      const { queryByText } = renderBrowse('/plugins?filterBy=all&q=' + escapeStringForRegex('graph (old)'), [
+        getCatalogPluginMock({ id: 'graph', name: 'Graph (old)' }),
+        getCatalogPluginMock({ id: 'plugin-2', name: 'Plugin 2' }),
+        getCatalogPluginMock({ id: 'plugin-3', name: 'Plugin 3' }),
+      ]);
+      await waitFor(() => expect(queryByText('Graph (old)')).toBeInTheDocument());
+      // Other plugin types shouldn't be shown
+      expect(queryByText('Plugin 2')).not.toBeInTheDocument();
+      expect(queryByText('Plugin 3')).not.toBeInTheDocument();
+    });
+
+    it('should be possible to filter plugins by type', async () => {
+      const { queryByText } = renderBrowse('/plugins?filterByType=datasource&filterBy=all', [
+        getCatalogPluginMock({ id: 'plugin-1', name: 'Plugin 1', type: PluginType.app }),
+        getCatalogPluginMock({ id: 'plugin-2', name: 'Plugin 2', type: PluginType.app }),
+        getCatalogPluginMock({ id: 'plugin-3', name: 'Plugin 3', type: PluginType.datasource }),
+      ]);
+      await waitFor(() => expect(queryByText('Plugin 3')).toBeInTheDocument());
+      // Other plugin types shouldn't be shown
+      expect(queryByText('Plugin 1')).not.toBeInTheDocument();
+      expect(queryByText('Plugin 2')).not.toBeInTheDocument();
+    });
+
+    it('should be possible to filter plugins both by type and a keyword', async () => {
+      const { queryByText } = renderBrowse('/plugins?filterByType=datasource&filterBy=all&q=Foo', [
+        getCatalogPluginMock({ id: 'plugin-1', name: 'Plugin 1', type: PluginType.app }),
+        getCatalogPluginMock({ id: 'plugin-2', name: 'Plugin 2', type: PluginType.datasource }),
+        getCatalogPluginMock({ id: 'plugin-3', name: 'Foo plugin', type: PluginType.datasource }),
+      ]);
+      await waitFor(() => expect(queryByText('Foo plugin')).toBeInTheDocument());
+      // Other plugin types shouldn't be shown
+      expect(queryByText('Plugin 1')).not.toBeInTheDocument();
+      expect(queryByText('Plugin 2')).not.toBeInTheDocument();
+    });
+
+    it('should list all available plugins if the keyword is empty', async () => {
+      const { queryByText } = renderBrowse('/plugins?filterBy=all&q=', [
+        getCatalogPluginMock({ id: 'plugin-1', name: 'Plugin 1', type: PluginType.app }),
+        getCatalogPluginMock({ id: 'plugin-2', name: 'Plugin 2', type: PluginType.panel }),
+        getCatalogPluginMock({ id: 'plugin-3', name: 'Plugin 3', type: PluginType.datasource }),
+      ]);
+
+      // We did not filter for any specific plugin type, so all plugins should be shown
+      await waitFor(() => expect(queryByText('Plugin 1')).toBeInTheDocument());
+      expect(queryByText('Plugin 2')).toBeInTheDocument();
+      expect(queryByText('Plugin 3')).toBeInTheDocument();
     });
   });
 
@@ -349,7 +407,7 @@ describe('Browse list of plugins', () => {
     expect(listOption).not.toBeChecked();
 
     // Switch to "list" view
-    userEvent.click(listOption);
+    await userEvent.click(listOption);
     expect(gridOption).not.toBeChecked();
     expect(listOption).toBeChecked();
 

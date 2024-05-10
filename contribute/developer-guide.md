@@ -2,16 +2,14 @@
 
 This guide helps you get started developing Grafana.
 
-Before you begin, you might want to read [How to contribute to Grafana as a junior dev](https://medium.com/@ivanahuckova/how-to-contribute-to-grafana-as-junior-dev-c01fe3064502) by [Ivana Huckova](https://medium.com/@ivanahuckova).
-
 ## Dependencies
 
 Make sure you have the following dependencies installed before setting up your developer environment:
 
 - [Git](https://git-scm.com/)
 - [Go](https://golang.org/dl/) (see [go.mod](../go.mod#L3) for minimum required version)
-- [Node.js (Long Term Support)](https://nodejs.org)
-- [Yarn](https://yarnpkg.com)
+- [Node.js (Long Term Support)](https://nodejs.org), with [corepack enabled](https://nodejs.org/api/corepack.html#enabling-the-feature). See [.nvmrc](../.nvmrc) for supported version. It's recommend you use a version manager such as [nvm](https://github.com/nvm-sh/nvm), [fnm](https://github.com/Schniz/fnm), or similar.
+- GCC (required for Cgo dependencies)
 
 ### macOS
 
@@ -20,8 +18,8 @@ We recommend using [Homebrew](https://brew.sh/) for installing any missing depen
 ```
 brew install git
 brew install go
-brew install node@16
-npm install -g yarn
+brew install node@20
+corepack enable
 ```
 
 ### Windows
@@ -39,6 +37,25 @@ For alternative ways of cloning the Grafana repository, please refer to [GitHub'
 
 **Warning:** Do not use `go get` to download Grafana. Recent versions of Go have added behavior which isn't compatible with the way the Grafana repository is structured.
 
+### Configure precommit hooks
+
+We use pre-commit hooks (via [lefthook](https://github.com/evilmartians/lefthook)) to lint, fix, and format code as you commit your changes. Previously the Grafana repository automatically installed these hook when you did `yarn install`, but they are now opt in for all contributors
+
+Install the lefthook precommit hooks with:
+
+```sh
+make lefthook-install
+```
+
+To remove precommit hooks, run
+
+```sh
+make lefthook-uninstall
+```
+
+> [!NOTE]
+> Contributors working on the frontend are highly encouraged to install the precommit hooks, even if your IDE formats on save, so the `.betterer.results` file is kept up to sync.
+
 ## Build Grafana
 
 Grafana consists of two components; the _frontend_, and the _backend_.
@@ -51,15 +68,20 @@ Before we can build the frontend assets, we need to install the dependencies:
 yarn install --immutable
 ```
 
+> Troubleshooting: if you get the error `The remote archive doesn't match the expected checksum` for a dependency pulled from a link (e.g. `"tether-drop": "https://github.com/torkelo/drop"`): this is a temporary mismatch. To work around it (while someone corrects the issue), you can prefix your `yarn install --immutable` command with [`YARN_CHECKSUM_BEHAVIOR=update`](https://yarnpkg.com/advanced/error-codes#yn0018---cache_checksum_mismatch)
+
 After the command has finished, we can start building our source code:
 
 ```
 yarn start
 ```
 
+This command will generate sass theme files, build all external plugins, then build the frontend assets.
 Once `yarn start` has built the assets, it will continue to do so whenever any of the files change. This means you don't have to manually build the assets every time you change the code.
 
-Next, we'll build the web server that will serve the frontend assets we just built.
+> Troubleshooting: if your first build works, but after pulling updates you see unexpected errors in the "Type-checking in progress..." stage, these can be caused by the [tsbuildinfo cache supporting incremental builds](https://www.typescriptlang.org/tsconfig#incremental). You can `rm tsconfig.tsbuildinfo` and re-try.
+
+Next, we'll build & run the web server that will serve the frontend assets we just built.
 
 ### Backend
 
@@ -87,7 +109,7 @@ You can build the back-end as follows:
 2. Generate code using Wire:
 
 ```
-# Normally Wire tool installed at $GOPATH/bin/wire.exe
+# Default Wire tool install path: $GOPATH/bin/wire.exe
 <Wire tool install path> gen -tags oss ./pkg/server ./pkg/cmd/grafana-cli/runner
 ```
 
@@ -128,32 +150,82 @@ Running the backend tests on Windows currently needs some tweaking, so use the b
 go run build.go test
 ```
 
+### Run SQLLite, PostgreSQL and MySQL integration tests
+
+By default, grafana runs SQLite, to run test with SQLite
+
+```bash
+go test -covermode=atomic -tags=integration ./pkg/...
+```
+
+To run PostgreSQL and MySQL integration tests locally, you need to start the docker blocks for MySQL and/or PostgreSQL test data sources by running `make devenv sources=mysql_tests,postgres_tests`. When your test data sources are running, you can execute integration tests by running:
+
+```bash
+make test-go-integration-mysql
+```
+
+and/or
+
+```bash
+make test-go-integration-postgres
+```
+
 ### Run end-to-end tests
 
-The end to end tests in Grafana use [Cypress](https://www.cypress.io/) to run automated scripts in a headless Chromium browser. Read more about our [e2e framework](/contribute/style-guides/e2e.md).
+Grafana uses [Cypress](https://www.cypress.io/) to end-to-end test core features. Core plugins use [Playwright](https://playwright.dev/) to run automated end-to-end tests. You can find more information on how to add end-to-end tests to your core plugin [here](./style-guides/e2e-plugins.md)
 
-To run the tests:
+#### Running Cypress tests
+
+To run all tests in a headless Chromium browser.
 
 ```
 yarn e2e
 ```
 
-By default, the end-to-end tests starts a Grafana instance listening on `localhost:3001`. To use a specific URL, set the `BASE_URL` environment variable:
+By default, the end-to-end tests start a Grafana instance listening on `localhost:3001`. To use a different URL, set the `BASE_URL` environment variable:
 
 ```
 BASE_URL=http://localhost:3333 yarn e2e
 ```
 
-To follow the tests in the browser while they're running, use the `yarn e2e:debug`.
+To follow all tests in the browser while they're running, use `yarn e2e:debug`
 
 ```
 yarn e2e:debug
 ```
 
-If you want to pick a test first, use the `yarn e2e:dev`, to pick a test and follow the test in the browser while it runs.
+To choose a single test to follow in the browser as it runs, use `yarn e2e:dev`
 
 ```
 yarn e2e:dev
+```
+
+#### To run the Playwright tests:
+
+**Note:** If you're using VS Code as your development editor, it's recommended to install the [Playwright test extension](https://marketplace.visualstudio.com/items?itemName=ms-playwright.playwright). It allows you to run, debug and generate Playwright tests from within the editor. For more information about the extension and how to install it, refer to the [Playwright documentation](https://playwright.dev/docs/getting-started-vscode).
+
+Each version of Playwright needs specific versions of browser binaries to operate. You will need to use the Playwright CLI to install these browsers.
+
+```
+yarn playwright install chromium
+```
+
+To run all tests in a headless Chromium browser and display results in the terminal.
+
+```
+yarn e2e:playwright
+```
+
+For a better developer experience, open the Playwright UI where you can easily walk through each step of the test and visually see what was happening before, during and after each step.
+
+```
+yarn e2e:playwright:ui
+```
+
+To open the HTML reporter for the last test run session.
+
+```
+yarn e2e:playwright:report
 ```
 
 ## Configure Grafana for development
@@ -170,7 +242,7 @@ app_mode = development
 
 ### Add data sources
 
-By now, you should be able to build and test a change you've made to the Grafana source code. In most cases, you need to add at least one data source to verify the change.
+By now, you should be able to build and test a change you've made to the Grafana source code. In most cases, you'll need to add at least one data source to verify the change.
 
 To set up data sources for your development environment, go to the [devenv](/devenv) directory in the Grafana repository:
 
@@ -209,6 +281,12 @@ The resulting image will be tagged as grafana/grafana:dev.
 ## Troubleshooting
 
 Are you having issues with setting up your environment? Here are some tips that might help.
+
+### IDE configuration
+
+Configure your IDE to use the Typescript version from the Grafana repository. The version should match the Typescript version in the package.json file, and is typically at the path `node_modules/.bin/tsc`.
+
+Previously Grafana used Yarn PnP to install frontend dependencies, which required additional special IDE configuration. This is no longer the case. If you have custom paths in your IDE for ESLint, Prettier, or Typescript, you can now remove them and use the defaults from node_modules.
 
 ### Too many open files when running `make run`
 
@@ -253,11 +331,15 @@ For some people, typically using the bash shell, ulimit fails with an error simi
 ulimit: open files: cannot modify limit: Operation not permitted
 ```
 
-If that happens to you, chances are you've already set a lower limit and your shell won't let you set a higher one. Try looking in your shell initialization files (~/.bashrc typically), if there's already a ulimit command that you can tweak.
+If that happens to you, chances are you've already set a lower limit and your shell won't let you set a higher one. Try looking in your shell initialization files (~/.bashrc typically), if there's already an ulimit command that you can tweak.
+
+### Getting `AggregateError` when building frontend tests
+
+If you encounter an `AggregateError` when building new tests, this is probably due to a call to our client [backend service](https://github.com/grafana/grafana/blob/main/public/app/core/services/backend_srv.ts) not being mocked. Our backend service anticipates multiple responses being returned and was built to return errors as an array. A test encountering errors from the service will group those errors as an `AggregateError` without breaking down the individual errors within. `backend_srv.processRequestError` is called once per error and is a great place to return information on what the individual errors might contain.
 
 ## Next steps
 
 - Read our [style guides](/contribute/style-guides).
 - Learn how to [Create a pull request](/contribute/create-pull-request.md).
-- Read [How to contribute to Grafana as a junior dev](https://medium.com/@ivanahuckova/how-to-contribute-to-grafana-as-junior-dev-c01fe3064502) by [Ivana Huckova](https://medium.com/@ivanahuckova).
 - Read about the [architecture](architecture).
+- Read through the [backend documentation](/contribute/backend/README.md).

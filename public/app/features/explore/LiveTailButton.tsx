@@ -1,6 +1,7 @@
-import React from 'react';
 import { css } from '@emotion/css';
+import React from 'react';
 import { CSSTransition } from 'react-transition-group';
+
 import { Tooltip, ButtonGroup, ToolbarButton } from '@grafana/ui';
 
 type LiveTailButtonProps = {
@@ -15,7 +16,7 @@ type LiveTailButtonProps = {
 
 export function LiveTailButton(props: LiveTailButtonProps) {
   const { start, pause, resume, isLive, isPaused, stop, splitted } = props;
-  const buttonVariant = isLive && !isPaused ? 'active' : 'default';
+  const buttonVariant = isLive && !isPaused ? 'active' : 'canvas';
   const onClickMain = isLive ? (isPaused ? resume : pause) : start;
 
   return (
@@ -55,26 +56,26 @@ export function LiveTailButton(props: LiveTailButtonProps) {
 }
 
 const styles = {
-  stopButtonEnter: css`
-    label: stopButtonEnter;
-    width: 0;
-    opacity: 0;
-    overflow: hidden;
-  `,
-  stopButtonEnterActive: css`
-    label: stopButtonEnterActive;
-    opacity: 1;
-    width: 32px;
-  `,
-  stopButtonExit: css`
-    label: stopButtonExit;
-    width: 32px;
-    opacity: 1;
-    overflow: hidden;
-  `,
-  stopButtonExitActive: css`
-    label: stopButtonExitActive;
-    opacity: 0;
-    width: 0;
-  `,
+  stopButtonEnter: css({
+    label: 'stopButtonEnter',
+    width: 0,
+    opacity: 0,
+    overflow: 'hidden',
+  }),
+  stopButtonEnterActive: css({
+    label: 'stopButtonEnterActive',
+    opacity: 1,
+    width: '32px',
+  }),
+  stopButtonExit: css({
+    label: 'stopButtonExit',
+    width: '32px',
+    opacity: 1,
+    overflow: 'hidden',
+  }),
+  stopButtonExitActive: css({
+    label: 'stopButtonExitActive',
+    opacity: 0,
+    width: 0,
+  }),
 };

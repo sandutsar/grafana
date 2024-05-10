@@ -1,14 +1,17 @@
-import React, { FunctionComponent, useEffect, useState } from 'react';
-import { VariableHide, VariableModel } from '../../../variables/types';
+import React, { useEffect, useState } from 'react';
+
+import { TypedVariableModel, VariableHide } from '@grafana/data';
 import { selectors } from '@grafana/e2e-selectors';
+
 import { PickerRenderer } from '../../../variables/pickers/PickerRenderer';
 
 interface Props {
-  variables: VariableModel[];
+  variables: TypedVariableModel[];
+  readOnly?: boolean;
 }
 
-export const SubMenuItems: FunctionComponent<Props> = ({ variables }) => {
-  const [visibleVariables, setVisibleVariables] = useState<VariableModel[]>([]);
+export const SubMenuItems = ({ variables, readOnly }: Props) => {
+  const [visibleVariables, setVisibleVariables] = useState<TypedVariableModel[]>([]);
 
   useEffect(() => {
     setVisibleVariables(variables.filter((state) => state.hide !== VariableHide.hideVariable));
@@ -20,17 +23,11 @@ export const SubMenuItems: FunctionComponent<Props> = ({ variables }) => {
 
   return (
     <>
-      {visibleVariables.map((variable) => {
-        return (
-          <div
-            key={variable.id}
-            className="submenu-item gf-form-inline"
-            data-testid={selectors.pages.Dashboard.SubMenu.submenuItem}
-          >
-            <PickerRenderer variable={variable} />
-          </div>
-        );
-      })}
+      {visibleVariables.map((variable) => (
+        <div key={variable.id} className="submenu-item" data-testid={selectors.pages.Dashboard.SubMenu.submenuItem}>
+          <PickerRenderer variable={variable} readOnly={readOnly} />
+        </div>
+      ))}
     </>
   );
 };

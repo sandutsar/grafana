@@ -1,11 +1,13 @@
 import { compact, each, findIndex, flatten, get, join, keyBy, last, map, reduce, without } from 'lodash';
-import { arrayMove } from 'app/core/utils/arrayMove';
-import { Parser } from './parser';
-import { TemplateSrv } from '@grafana/runtime';
+
 import { ScopedVars } from '@grafana/data';
-import { FuncInstance } from './gfunc';
-import { GraphiteSegment } from './types';
+import { TemplateSrv } from '@grafana/runtime';
+import { arrayMove } from 'app/core/utils/arrayMove';
+
 import { GraphiteDatasource } from './datasource';
+import { FuncInstance } from './gfunc';
+import { AstNode, Parser } from './parser';
+import { GraphiteSegment } from './types';
 
 export type GraphiteTagOperator = '=' | '=~' | '!=' | '!=~';
 
@@ -39,7 +41,6 @@ export default class GraphiteQuery {
   templateSrv: any;
   scopedVars: any;
 
-  /** @ngInject */
   constructor(datasource: any, target: any, templateSrv?: TemplateSrv, scopedVars?: ScopedVars) {
     this.datasource = datasource;
     this.target = target;
@@ -77,8 +78,10 @@ export default class GraphiteQuery {
     try {
       this.parseTargetRecursive(astNode, null);
     } catch (err) {
-      console.error('error parsing target:', err.message);
-      this.error = err.message;
+      if (err instanceof Error) {
+        console.error('error parsing target:', err.message);
+        this.error = err.message;
+      }
       this.target.textEditor = true;
     }
 
@@ -107,6 +110,12 @@ export default class GraphiteQuery {
         const innerFunc = this.datasource.createFuncInstance(astNode.name, {
           withDefaultParams: false,
         });
+
+        // bug fix for parsing multiple functions as params
+        handleMultipleSeriesByTagsParams(astNode);
+
+        handleDivideSeriesListsNestedFunctions(astNode);
+
         each(astNode.params, (param) => {
           this.parseTargetRecursive(param, innerFunc);
         });
@@ -152,11 +161,11 @@ export default class GraphiteQuery {
     this.segments.push({ value: 'select metric' });
   }
 
-  addFunction(newFunc: any) {
+  addFunction(newFunc: FuncInstance) {
     this.functions.push(newFunc);
   }
 
-  addFunctionParameter(func: any, value: string) {
+  addFunctionParameter(func: FuncInstance, value: string) {
     if (func.params.length >= func.def.params.length && !get(last(func.def.params), 'multiple', false)) {
       throw { message: 'too many parameters for function ' + func.def.name };
     }
@@ -167,13 +176,13 @@ export default class GraphiteQuery {
     this.functions = without(this.functions, func);
   }
 
-  moveFunction(func: any, offset: number) {
+  moveFunction(func: FuncInstance, offset: number) {
     const index = this.functions.indexOf(func);
     arrayMove(this.functions, index, index + offset);
   }
 
   updateModelTarget(targets: any) {
-    const wrapFunction = (target: string, func: any) => {
+    const wrapFunction = (target: string, func: FuncInstance) => {
       return func.render(target, (value: string) => {
         return this.templateSrv.replace(value, this.scopedVars);
       });
@@ -208,19 +217,10 @@ export default class GraphiteQuery {
     let targetWithNestedQueries = target.target;
 
     // Use ref count to track circular references
-    function countTargetRefs(targetsByRefId: any, refId: string) {
-      let refCount = 0;
-      each(targetsByRefId, (t, id) => {
-        if (id !== refId) {
-          const match = nestedSeriesRefRegex.exec(t.target);
-          const count = match && match.length ? match.length - 1 : 0;
-          refCount += count;
-        }
-      });
-      targetsByRefId[refId].refCount = refCount;
-    }
     each(targetsByRefId, (t, id) => {
-      countTargetRefs(targetsByRefId, id);
+      const regex = RegExp(`\#(${id})`, 'g');
+      const refMatches = targetWithNestedQueries.match(regex);
+      t.refCount = refMatches?.length ?? 0;
     });
 
     // Keep interpolating until there are no query references
@@ -331,4 +331,105 @@ export default class GraphiteQuery {
 
 function renderTagString(tag: { key: any; operator?: any; value?: any }) {
   return tag.key + tag.operator + tag.value;
+}
+
+/**
+ * mutates the second seriesByTag function into a string to fix a parsing bug
+ * @param astNode
+ * @param innerFunc
+ */
+function handleMultipleSeriesByTagsParams(astNode: AstNode) {
+  // if function has two params that are function seriesByTags keep the second as a string otherwise we have a parsing error
+  if (astNode.params && astNode.params.length >= 2) {
+    let count = 0;
+    astNode.params = astNode.params.map((p: AstNode) => {
+      if (p.type === 'function') {
+        count += 1;
+      }
+
+      if (count === 2 && p.type === 'function' && p.name === 'seriesByTag') {
+        // convert second function to a string
+        const stringParams =
+          p.params &&
+          p.params.reduce((acc: string, p: AstNode, idx: number, paramsArr: AstNode[]) => {
+            if (idx === 0 || idx !== paramsArr.length - 1) {
+              return `${acc}'${p.value}',`;
+            }
+
+            return `${acc}'${p.value}'`;
+          }, '');
+
+        return {
+          type: 'string',
+          value: `${p.name}(${stringParams})`,
+        };
+      }
+
+      return p;
+    });
+  }
+}
+
+/**
+ * Converts all nested functions as parametors (recursively) to strings
+ */
+function handleDivideSeriesListsNestedFunctions(astNode: AstNode) {
+  // if divideSeriesLists function, the second parameters should be strings
+  if (astNode.name === 'divideSeriesLists' && astNode.params && astNode.params.length >= 2) {
+    astNode.params = astNode.params.map((p: AstNode, idx: number) => {
+      if (idx === 1 && p.type === 'function') {
+        // convert nested 2nd functions as parametors to a strings
+        // all nested functions should be strings
+        // if the node is a function it will have params
+        // if these params are functions, they will have params
+        // at some point we will have to add the params as strings
+        // then wrap them in the function
+        let functionString = '';
+        let s = p.name + '(' + nestedFunctionsToString(p, functionString);
+
+        p = {
+          type: 'string',
+          value: s,
+        };
+      }
+
+      return p;
+    });
+  }
+
+  return astNode;
+}
+
+function nestedFunctionsToString(node: AstNode, functionString: string): string | undefined {
+  let count = 0;
+  if (node.params) {
+    count++;
+
+    const paramsLength = node.params?.length ?? 0;
+
+    node.params.forEach((innerNode: AstNode, idx: number) => {
+      if (idx < paramsLength - 1) {
+        functionString += switchCase(innerNode, functionString) + ',';
+      } else {
+        functionString += switchCase(innerNode, functionString);
+      }
+    });
+
+    return functionString + ')';
+  } else {
+    return (functionString += switchCase(node, functionString));
+  }
+}
+
+function switchCase(node: AstNode, functionString: string) {
+  switch (node.type) {
+    case 'function':
+      functionString += node.name + '(';
+      return nestedFunctionsToString(node, functionString);
+    case 'metric':
+      const segmentString = join(map(node.segments, 'value'), '.');
+      return segmentString;
+    default:
+      return node.value;
+  }
 }

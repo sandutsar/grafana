@@ -2,12 +2,13 @@ package plugins
 
 import (
 	"context"
-	"os"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/grafana/grafana/pkg/infra/log"
 	"github.com/grafana/grafana/pkg/plugins"
-	"github.com/stretchr/testify/require"
+	"github.com/grafana/grafana/pkg/services/pluginsintegration/pluginstore"
 )
 
 const (
@@ -21,47 +22,43 @@ const (
 func TestConfigReader(t *testing.T) {
 	t.Run("Broken yaml should return error", func(t *testing.T) {
 		reader := newConfigReader(log.New("test logger"), nil)
-		_, err := reader.readConfig(brokenYaml)
+		_, err := reader.readConfig(context.Background(), brokenYaml)
 		require.Error(t, err)
 	})
 
 	t.Run("Skip invalid directory", func(t *testing.T) {
 		cfgProvider := newConfigReader(log.New("test logger"), nil)
-		cfg, err := cfgProvider.readConfig(emptyFolder)
+		cfg, err := cfgProvider.readConfig(context.Background(), emptyFolder)
 		require.NoError(t, err)
 		require.Len(t, cfg, 0)
 	})
 
 	t.Run("Unknown app plugin should return error", func(t *testing.T) {
-		cfgProvider := newConfigReader(log.New("test logger"), fakePluginStore{})
-		_, err := cfgProvider.readConfig(unknownApp)
+		cfgProvider := newConfigReader(log.New("test logger"), &pluginstore.FakePluginStore{})
+		_, err := cfgProvider.readConfig(context.Background(), unknownApp)
 		require.Error(t, err)
 		require.Equal(t, "plugin not installed: \"nonexisting\"", err.Error())
 	})
 
 	t.Run("Read incorrect properties", func(t *testing.T) {
 		cfgProvider := newConfigReader(log.New("test logger"), nil)
-		_, err := cfgProvider.readConfig(incorrectSettings)
+		_, err := cfgProvider.readConfig(context.Background(), incorrectSettings)
 		require.Error(t, err)
 		require.Equal(t, "app item 1 in configuration doesn't contain required field type", err.Error())
 	})
 
 	t.Run("Can read correct properties", func(t *testing.T) {
-		pm := fakePluginStore{
-			apps: map[string]plugins.PluginDTO{
-				"test-plugin":   {},
-				"test-plugin-2": {},
+		pm := &pluginstore.FakePluginStore{
+			PluginList: []pluginstore.Plugin{
+				{JSONData: plugins.JSONData{ID: "test-plugin"}},
+				{JSONData: plugins.JSONData{ID: "test-plugin-2"}},
 			},
 		}
 
-		err := os.Setenv("ENABLE_PLUGIN_VAR", "test-plugin")
-		require.NoError(t, err)
-		t.Cleanup(func() {
-			_ = os.Unsetenv("ENABLE_PLUGIN_VAR")
-		})
+		t.Setenv("ENABLE_PLUGIN_VAR", "test-plugin")
 
 		cfgProvider := newConfigReader(log.New("test logger"), pm)
-		cfg, err := cfgProvider.readConfig(correctProperties)
+		cfg, err := cfgProvider.readConfig(context.Background(), correctProperties)
 		require.NoError(t, err)
 		require.Len(t, cfg, 1)
 
@@ -86,16 +83,4 @@ func TestConfigReader(t *testing.T) {
 			require.Equal(t, tc.ExpectedEnabled, app.Enabled)
 		}
 	})
-}
-
-type fakePluginStore struct {
-	plugins.Store
-
-	apps map[string]plugins.PluginDTO
-}
-
-func (pr fakePluginStore) Plugin(_ context.Context, pluginID string) (plugins.PluginDTO, bool) {
-	p, exists := pr.apps[pluginID]
-
-	return p, exists
 }

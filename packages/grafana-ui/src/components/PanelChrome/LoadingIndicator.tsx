@@ -1,9 +1,11 @@
-import React from 'react';
 import { css, cx } from '@emotion/css';
+import React from 'react';
+
 import { selectors } from '@grafana/e2e-selectors';
+
+import { useStyles2 } from '../../themes';
 import { Icon } from '../Icon/Icon';
 import { Tooltip } from '../Tooltip/Tooltip';
-import { useStyles } from '../../themes';
 
 /**
  * @internal
@@ -16,8 +18,8 @@ export type LoadingIndicatorProps = {
 /**
  * @internal
  */
-export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({ onCancel, loading }) => {
-  const styles = useStyles(getStyles);
+export const LoadingIndicator = ({ onCancel, loading }: LoadingIndicatorProps) => {
+  const styles = useStyles2(getStyles);
 
   if (!loading) {
     return null;
@@ -30,7 +32,7 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({ onCancel, lo
         name="sync"
         size="sm"
         onClick={onCancel}
-        aria-label={selectors.components.LoadingIndicator.icon}
+        data-testid={selectors.components.LoadingIndicator.icon}
       />
     </Tooltip>
   );
@@ -38,8 +40,8 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({ onCancel, lo
 
 const getStyles = () => {
   return {
-    clickable: css`
-      cursor: pointer;
-    `,
+    clickable: css({
+      cursor: 'pointer',
+    }),
   };
 };

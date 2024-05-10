@@ -4,11 +4,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grafana/grafana/pkg/components/simplejson"
-	"github.com/grafana/grafana/pkg/models"
-	"github.com/grafana/grafana/pkg/tsdb/legacydata"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/grafana/grafana/pkg/components/simplejson"
+	"github.com/grafana/grafana/pkg/services/datasources"
+	"github.com/grafana/grafana/pkg/tsdb/legacydata"
 )
 
 func TestIntervalCalculator_Calculate(t *testing.T) {
@@ -73,32 +74,12 @@ func TestRoundInterval(t *testing.T) {
 	}
 }
 
-func TestFormatDuration(t *testing.T) {
-	testCases := []struct {
-		name     string
-		duration time.Duration
-		expected string
-	}{
-		{"61s", time.Second * 61, "1m"},
-		{"30ms", time.Millisecond * 30, "30ms"},
-		{"23h", time.Hour * 23, "23h"},
-		{"24h", time.Hour * 24, "1d"},
-		{"367d", time.Hour * 24 * 367, "1y"},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.expected, FormatDuration(tc.duration))
-		})
-	}
-}
-
 func TestGetIntervalFrom(t *testing.T) {
 	dsJSON, err := simplejson.NewJson([]byte(`{"timeInterval": "60s"}`))
 	require.NoError(t, err)
 	testCases := []struct {
 		name            string
-		dsInfo          *models.DataSource
+		dsInfo          *datasources.DataSource
 		queryModel      string
 		defaultInterval time.Duration
 		expected        time.Duration
@@ -108,7 +89,7 @@ func TestGetIntervalFrom(t *testing.T) {
 		{"2m", nil, `{"interval": "2m"}`, time.Second * 15, time.Minute * 2},
 		{"intervalMs", nil, `{"intervalMs": 45000}`, time.Second * 15, time.Second * 45},
 		{"intervalMs sub-seconds", nil, `{"intervalMs": 45200}`, time.Second * 15, time.Millisecond * 45200},
-		{"dsInfo timeInterval", &models.DataSource{
+		{"dsInfo timeInterval", &datasources.DataSource{
 			JsonData: dsJSON,
 		}, `{}`, time.Second * 15, time.Second * 60},
 		{"defaultInterval when interval empty", nil, `{"interval": ""}`, time.Second * 15, time.Second * 15},

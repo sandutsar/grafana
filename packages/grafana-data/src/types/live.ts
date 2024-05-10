@@ -20,9 +20,9 @@ export enum LiveChannelScope {
  * @alpha
  */
 export enum LiveChannelType {
-  DataStream = 'stream', // each message contains a batch of rows that will be appened to previous values
+  DataStream = 'stream', // each message contains a batch of rows that will be appended to previous values
   DataFrame = 'frame', // each message is an entire data frame and should *replace* previous content
-  JSON = 'json', // arbitray json message
+  JSON = 'json', // arbitrary json message
 }
 
 export enum LiveChannelConnectionState {
@@ -30,11 +30,13 @@ export enum LiveChannelConnectionState {
   Pending = 'pending',
   /** Connected to the channel */
   Connected = 'connected',
+  /** Connecting to a channel */
+  Connecting = 'connecting',
   /** Disconnected from the channel.  The channel will reconnect when possible */
   Disconnected = 'disconnected',
   /** Was at some point connected, and will not try to reconnect */
   Shutdown = 'shutdown',
-  /** Channel configuraiton was invalid and will not connect */
+  /** Channel configuration was invalid and will not connect */
   Invalid = 'invalid',
 }
 
@@ -128,10 +130,22 @@ export interface LiveChannelPresenceStatus {
 /**
  * @alpha -- experimental
  */
+export type LiveChannelId = string;
+
+/**
+ * @alpha -- experimental
+ */
 export interface LiveChannelAddress {
   scope: LiveChannelScope;
   namespace: string; // depends on the scope
   path: string;
+
+  /**
+   * Additional metadata passed to a channel.  The backend will propagate this JSON object to
+   * each OnSubscribe and RunStream calls.  This value should be constant across multiple requests
+   * to the same channel path
+   */
+  data?: any;
 }
 
 /**
@@ -167,11 +181,11 @@ export function isValidLiveChannelAddress(addr?: LiveChannelAddress): addr is Li
  *
  * @alpha -- experimental
  */
-export function toLiveChannelId(addr: LiveChannelAddress): string {
+export function toLiveChannelId(addr: LiveChannelAddress): LiveChannelId {
   if (!addr.scope) {
     return '';
   }
-  let id = addr.scope as string;
+  let id: string = addr.scope;
   if (!addr.namespace) {
     return id;
   }

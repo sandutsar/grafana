@@ -1,86 +1,123 @@
 import { lastValueFrom } from 'rxjs';
-import { getBackendSrv } from '@grafana/runtime';
 
+import { isObject } from '@grafana/data';
+import { FetchResponse, getBackendSrv } from '@grafana/runtime';
+import { RulerDataSourceConfig } from 'app/types/unified-alerting';
 import { PostableRulerRuleGroupDTO, RulerRuleGroupDTO, RulerRulesConfigDTO } from 'app/types/unified-alerting-dto';
-import { getDatasourceAPIId, GRAFANA_RULES_SOURCE_NAME } from '../utils/datasource';
-import { RULER_NOT_SUPPORTED_MSG } from '../utils/constants';
 
-// upsert a rule group. use this to update rules
+import { RULER_NOT_SUPPORTED_MSG } from '../utils/constants';
+import { getDatasourceAPIUid, GRAFANA_RULES_SOURCE_NAME } from '../utils/datasource';
+
+import { prepareRulesFilterQueryParams } from './prometheus';
+
+interface ErrorResponseMessage {
+  message?: string;
+  error?: string;
+}
+
+export interface RulerRequestUrl {
+  path: string;
+  params?: Record<string, string>;
+}
+
+export function rulerUrlBuilder(rulerConfig: RulerDataSourceConfig) {
+  const grafanaServerPath = `/api/ruler/${getDatasourceAPIUid(rulerConfig.dataSourceName)}`;
+
+  const rulerPath = `${grafanaServerPath}/api/v1/rules`;
+  const rulerSearchParams = new URLSearchParams();
+
+  rulerSearchParams.set('subtype', rulerConfig.apiVersion === 'legacy' ? 'cortex' : 'mimir');
+
+  return {
+    rules: (filter?: FetchRulerRulesFilter): RulerRequestUrl => {
+      const params = prepareRulesFilterQueryParams(rulerSearchParams, filter);
+
+      return {
+        path: `${rulerPath}`,
+        params: params,
+      };
+    },
+    namespace: (namespace: string): RulerRequestUrl => ({
+      path: `${rulerPath}/${encodeURIComponent(namespace)}`,
+      params: Object.fromEntries(rulerSearchParams),
+    }),
+    namespaceGroup: (namespaceUID: string, group: string): RulerRequestUrl => ({
+      path: `${rulerPath}/${encodeURIComponent(namespaceUID)}/${encodeURIComponent(group)}`,
+      params: Object.fromEntries(rulerSearchParams),
+    }),
+  };
+}
+
+// upsert a rule group. use this to update rule
 export async function setRulerRuleGroup(
-  dataSourceName: string,
-  namespace: string,
+  rulerConfig: RulerDataSourceConfig,
+  namespaceIdentifier: string,
   group: PostableRulerRuleGroupDTO
 ): Promise<void> {
+  const { path, params } = rulerUrlBuilder(rulerConfig).namespace(namespaceIdentifier);
   await lastValueFrom(
     getBackendSrv().fetch<unknown>({
       method: 'POST',
-      url: `/api/ruler/${getDatasourceAPIId(dataSourceName)}/api/v1/rules/${encodeURIComponent(namespace)}`,
+      url: path,
       data: group,
       showErrorAlert: false,
       showSuccessAlert: false,
+      params,
     })
   );
 }
 
 export interface FetchRulerRulesFilter {
-  dashboardUID: string;
+  dashboardUID?: string;
   panelId?: number;
 }
 
 // fetch all ruler rule namespaces and included groups
-export async function fetchRulerRules(dataSourceName: string, filter?: FetchRulerRulesFilter) {
-  if (filter?.dashboardUID && dataSourceName !== GRAFANA_RULES_SOURCE_NAME) {
-    throw new Error('Filtering by dashboard UID is not supported for cloud rules sources.');
+export async function fetchRulerRules(rulerConfig: RulerDataSourceConfig, filter?: FetchRulerRulesFilter) {
+  if (filter?.dashboardUID && rulerConfig.dataSourceName !== GRAFANA_RULES_SOURCE_NAME) {
+    throw new Error('Filtering by dashboard UID is only supported by Grafana.');
   }
 
-  const params: Record<string, string> = {};
-  if (filter?.dashboardUID) {
-    params['dashboard_uid'] = filter.dashboardUID;
-    if (filter.panelId) {
-      params['panel_id'] = String(filter.panelId);
-    }
-  }
-  return rulerGetRequest<RulerRulesConfigDTO>(
-    `/api/ruler/${getDatasourceAPIId(dataSourceName)}/api/v1/rules`,
-    {},
-    params
-  );
+  // TODO Move params creation to the rules function
+  const { path: url, params } = rulerUrlBuilder(rulerConfig).rules(filter);
+  return rulerGetRequest<RulerRulesConfigDTO>(url, {}, params);
 }
 
 // fetch rule groups for a particular namespace
 // will throw with { status: 404 } if namespace does not exist
-export async function fetchRulerRulesNamespace(dataSourceName: string, namespace: string) {
-  const result = await rulerGetRequest<Record<string, RulerRuleGroupDTO[]>>(
-    `/api/ruler/${getDatasourceAPIId(dataSourceName)}/api/v1/rules/${encodeURIComponent(namespace)}`,
-    {}
-  );
+export async function fetchRulerRulesNamespace(rulerConfig: RulerDataSourceConfig, namespace: string) {
+  const { path, params } = rulerUrlBuilder(rulerConfig).namespace(namespace);
+  const result = await rulerGetRequest<Record<string, RulerRuleGroupDTO[]>>(path, {}, params);
   return result[namespace] || [];
 }
 
 // fetch a particular rule group
 // will throw with { status: 404 } if rule group does not exist
-export async function fetchRulerRulesGroup(
-  dataSourceName: string,
-  namespace: string,
-  group: string
-): Promise<RulerRuleGroupDTO | null> {
+export async function fetchTestRulerRulesGroup(dataSourceName: string): Promise<RulerRuleGroupDTO | null> {
   return rulerGetRequest<RulerRuleGroupDTO | null>(
-    `/api/ruler/${getDatasourceAPIId(dataSourceName)}/api/v1/rules/${encodeURIComponent(
-      namespace
-    )}/${encodeURIComponent(group)}`,
+    `/api/ruler/${getDatasourceAPIUid(dataSourceName)}/api/v1/rules/test/test`,
     null
   );
 }
 
-export async function deleteRulerRulesGroup(dataSourceName: string, namespace: string, groupName: string) {
+export async function fetchRulerRulesGroup(
+  rulerConfig: RulerDataSourceConfig,
+  namespaceIdentifier: string, // can be the namespace name or namespace UID
+  group: string
+): Promise<RulerRuleGroupDTO | null> {
+  const { path, params } = rulerUrlBuilder(rulerConfig).namespaceGroup(namespaceIdentifier, group);
+  return rulerGetRequest<RulerRuleGroupDTO | null>(path, null, params);
+}
+
+export async function deleteRulerRulesGroup(rulerConfig: RulerDataSourceConfig, namespace: string, groupName: string) {
+  const { path, params } = rulerUrlBuilder(rulerConfig).namespaceGroup(namespace, groupName);
   await lastValueFrom(
     getBackendSrv().fetch({
-      url: `/api/ruler/${getDatasourceAPIId(dataSourceName)}/api/v1/rules/${encodeURIComponent(
-        namespace
-      )}/${encodeURIComponent(groupName)}`,
+      url: path,
       method: 'DELETE',
       showSuccessAlert: false,
       showErrorAlert: false,
+      params,
     })
   );
 }
@@ -97,35 +134,62 @@ async function rulerGetRequest<T>(url: string, empty: T, params?: Record<string,
       })
     );
     return response.data;
-  } catch (e) {
-    if (e?.status === 404) {
-      if (e?.data?.message?.includes('group does not exist') || e?.data?.message?.includes('no rule groups found')) {
-        return empty;
-      }
-      throw new Error('404 from rules config endpoint. Perhaps ruler API is not enabled?');
-    } else if (
-      e?.status === 500 &&
-      e?.data?.message?.includes('unexpected content type from upstream. expected YAML, got text/html')
-    ) {
+  } catch (error) {
+    if (!isResponseError(error)) {
+      throw error;
+    }
+
+    if (isCortexErrorResponse(error)) {
+      return empty;
+    } else if (isRulerNotSupported(error)) {
+      // assert if the endoint is not supported at all
       throw {
-        ...e,
+        ...error,
         data: {
-          ...e?.data,
+          ...error.data,
           message: RULER_NOT_SUPPORTED_MSG,
         },
       };
     }
-    throw e;
+    throw error;
   }
 }
 
-export async function deleteNamespace(dataSourceName: string, namespace: string): Promise<void> {
+function isResponseError(error: unknown): error is FetchResponse<ErrorResponseMessage> {
+  if (!isObject(error)) {
+    return false;
+  }
+
+  const hasErrorMessage = 'data' in error && error.data !== null && error.data !== undefined;
+  const hasErrorCode = 'status' in error && Number.isFinite(error.status);
+
+  return hasErrorCode && hasErrorMessage;
+}
+
+function isRulerNotSupported(error: FetchResponse<ErrorResponseMessage>) {
+  return (
+    error.status === 404 ||
+    (error.status === 500 &&
+      error.data.message?.includes('unexpected content type from upstream. expected YAML, got text/html'))
+  );
+}
+
+function isCortexErrorResponse(error: FetchResponse<ErrorResponseMessage>) {
+  return (
+    error.status === 404 &&
+    (error.data.message?.includes('group does not exist') || error.data.message?.includes('no rule groups found'))
+  );
+}
+
+export async function deleteNamespace(rulerConfig: RulerDataSourceConfig, namespace: string): Promise<void> {
+  const { path, params } = rulerUrlBuilder(rulerConfig).namespace(namespace);
   await lastValueFrom(
     getBackendSrv().fetch<unknown>({
       method: 'DELETE',
-      url: `/api/ruler/${getDatasourceAPIId(dataSourceName)}/api/v1/rules/${encodeURIComponent(namespace)}`,
+      url: path,
       showErrorAlert: false,
       showSuccessAlert: false,
+      params,
     })
   );
 }

@@ -1,29 +1,24 @@
 package api
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
-	"github.com/grafana/grafana/pkg/bus"
+	"github.com/stretchr/testify/require"
+
+	"github.com/grafana/grafana/pkg/infra/db/dbtest"
 	"github.com/grafana/grafana/pkg/infra/localcache"
-	"github.com/grafana/grafana/pkg/models"
 	"github.com/grafana/grafana/pkg/setting"
 	"github.com/grafana/grafana/pkg/web"
-	"github.com/stretchr/testify/require"
 )
 
 func TestHealthAPI_Version(t *testing.T) {
 	m, _ := setupHealthAPITestEnvironment(t, func(cfg *setting.Cfg) {
 		cfg.BuildVersion = "7.4.0"
 		cfg.BuildCommit = "59906ab1bf"
-	})
-
-	bus.AddHandlerCtx("test", func(ctx context.Context, query *models.GetDBHealthQuery) error {
-		return nil
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
@@ -41,13 +36,32 @@ func TestHealthAPI_Version(t *testing.T) {
 	require.JSONEq(t, expectedBody, rec.Body.String())
 }
 
+func TestHealthAPI_VersionEnterprise(t *testing.T) {
+	m, _ := setupHealthAPITestEnvironment(t, func(cfg *setting.Cfg) {
+		cfg.BuildVersion = "7.4.0"
+		cfg.EnterpriseBuildCommit = "22206ab1be"
+		cfg.BuildCommit = "59906ab1bf"
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	rec := httptest.NewRecorder()
+	m.ServeHTTP(rec, req)
+
+	require.Equal(t, 200, rec.Code)
+	expectedBody := `
+		{
+			"database": "ok",
+			"enterpriseCommit": "22206ab1be",
+			"version": "7.4.0",
+			"commit": "59906ab1bf"
+		}
+	`
+	require.JSONEq(t, expectedBody, rec.Body.String())
+}
+
 func TestHealthAPI_AnonymousHideVersion(t *testing.T) {
 	m, hs := setupHealthAPITestEnvironment(t)
 	hs.Cfg.AnonymousHideVersion = true
-
-	bus.AddHandlerCtx("test", func(ctx context.Context, query *models.GetDBHealthQuery) error {
-		return nil
-	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 	rec := httptest.NewRecorder()
@@ -67,10 +81,6 @@ func TestHealthAPI_DatabaseHealthy(t *testing.T) {
 
 	m, hs := setupHealthAPITestEnvironment(t)
 	hs.Cfg.AnonymousHideVersion = true
-
-	bus.AddHandlerCtx("test", func(ctx context.Context, query *models.GetDBHealthQuery) error {
-		return nil
-	})
 
 	healthy, found := hs.CacheService.Get(cacheKey)
 	require.False(t, found)
@@ -98,10 +108,7 @@ func TestHealthAPI_DatabaseUnhealthy(t *testing.T) {
 
 	m, hs := setupHealthAPITestEnvironment(t)
 	hs.Cfg.AnonymousHideVersion = true
-
-	bus.AddHandlerCtx("test", func(ctx context.Context, query *models.GetDBHealthQuery) error {
-		return errors.New("bad")
-	})
+	hs.SQLStore.(*dbtest.FakeDB).ExpectedError = errors.New("bad")
 
 	healthy, found := hs.CacheService.Get(cacheKey)
 	require.False(t, found)
@@ -129,11 +136,6 @@ func TestHealthAPI_DatabaseHealthCached(t *testing.T) {
 
 	m, hs := setupHealthAPITestEnvironment(t)
 	hs.Cfg.AnonymousHideVersion = true
-
-	// Database is healthy.
-	bus.AddHandlerCtx("test", func(ctx context.Context, query *models.GetDBHealthQuery) error {
-		return nil
-	})
 
 	// Mock unhealthy database in cache.
 	hs.CacheService.Set(cacheKey, false, 5*time.Minute)
@@ -171,9 +173,6 @@ func TestHealthAPI_DatabaseHealthCached(t *testing.T) {
 func setupHealthAPITestEnvironment(t *testing.T, cbs ...func(*setting.Cfg)) (*web.Mux, *HTTPServer) {
 	t.Helper()
 
-	bus.ClearBusHandlers()
-	t.Cleanup(bus.ClearBusHandlers)
-
 	m := web.New()
 	cfg := setting.NewCfg()
 	for _, cb := range cbs {
@@ -182,6 +181,7 @@ func setupHealthAPITestEnvironment(t *testing.T, cbs ...func(*setting.Cfg)) (*we
 	hs := &HTTPServer{
 		CacheService: localcache.New(5*time.Minute, 10*time.Minute),
 		Cfg:          cfg,
+		SQLStore:     dbtest.NewFakeDB(),
 	}
 
 	m.Get("/api/health", hs.apiHealthHandler)

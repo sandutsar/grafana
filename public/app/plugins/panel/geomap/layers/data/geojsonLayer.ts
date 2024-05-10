@@ -1,21 +1,33 @@
-import { MapLayerRegistryItem, MapLayerOptions, PanelData, GrafanaTheme2, PluginState } from '@grafana/data';
+import { FeatureLike } from 'ol/Feature';
 import Map from 'ol/Map';
+import { unByKey } from 'ol/Observable';
+import GeoJSON from 'ol/format/GeoJSON';
 import VectorLayer from 'ol/layer/Vector';
 import VectorSource from 'ol/source/Vector';
-import GeoJSON from 'ol/format/GeoJSON';
-import { unByKey } from 'ol/Observable';
-import { checkFeatureMatchesStyleRule } from '../../utils/checkFeatureMatchesStyleRule';
-import { ComparisonOperation, FeatureRuleConfig, FeatureStyleConfig } from '../../types';
 import { Style } from 'ol/style';
-import { FeatureLike } from 'ol/Feature';
-import { GeomapStyleRulesEditor } from '../../editor/GeomapStyleRulesEditor';
-import { defaultStyleConfig, StyleConfig } from '../../style/types';
-import { getStyleConfigState } from '../../style/utils';
-import { polyStyle } from '../../style/markers';
-import { StyleEditor } from './StyleEditor';
 import { ReplaySubject } from 'rxjs';
 import { map as rxjsmap, first } from 'rxjs/operators';
+
+import { MapLayerRegistryItem, MapLayerOptions, GrafanaTheme2, EventBus } from '@grafana/data';
+import { ComparisonOperation } from '@grafana/schema';
+
+import { GeomapStyleRulesEditor } from '../../editor/GeomapStyleRulesEditor';
+import { StyleEditor } from '../../editor/StyleEditor';
+import { polyStyle } from '../../style/markers';
+import {
+  defaultStyleConfig,
+  GeoJSONLineStyles,
+  GeoJSONPointStyles,
+  GeoJSONPolyStyles,
+  StyleConfig,
+  StyleConfigState,
+  StyleConfigValues,
+} from '../../style/types';
+import { getStyleConfigState } from '../../style/utils';
+import { FeatureRuleConfig, FeatureStyleConfig } from '../../types';
+import { checkFeatureMatchesStyleRule } from '../../utils/checkFeatureMatchesStyleRule';
 import { getLayerPropertyInfo } from '../../utils/getFeatures';
+import { getPublicGeoJSONFiles } from '../../utils/utils';
 
 export interface GeoJSONMapperConfig {
   // URL for a geojson file
@@ -35,8 +47,9 @@ const defaultOptions: GeoJSONMapperConfig = {
 };
 
 interface StyleCheckerState {
-  poly: Style | Style[];
-  point: Style | Style[];
+  state: StyleConfigState;
+  poly?: Style | Style[];
+  point?: Style | Style[];
   rule?: FeatureRuleConfig;
 }
 
@@ -54,13 +67,12 @@ export const geojsonLayer: MapLayerRegistryItem<GeoJSONMapperConfig> = {
   name: 'GeoJSON',
   description: 'Load static data from a geojson file',
   isBaseMap: false,
-  state: PluginState.beta,
 
   /**
    * Function that configures transformation and returns a transformer
    * @param options
    */
-  create: async (map: Map, options: MapLayerOptions<GeoJSONMapperConfig>, theme: GrafanaTheme2) => {
+  create: async (map: Map, options: MapLayerOptions<GeoJSONMapperConfig>, eventBus: EventBus, theme: GrafanaTheme2) => {
     const config = { ...defaultOptions, ...options.config };
 
     const source = new VectorSource({
@@ -72,7 +84,7 @@ export const geojsonLayer: MapLayerRegistryItem<GeoJSONMapperConfig> = {
 
     const key = source.on('change', () => {
       //one geojson loads
-      if (source.getState() == 'ready') {
+      if (source.getState() === 'ready') {
         unByKey(key);
         features.next(source.getFeatures());
       }
@@ -84,8 +96,7 @@ export const geojsonLayer: MapLayerRegistryItem<GeoJSONMapperConfig> = {
         if (r.style) {
           const s = await getStyleConfigState(r.style);
           styles.push({
-            point: s.maker(s.base),
-            poly: polyStyle(s.base),
+            state: s,
             rule: r.check,
           });
         }
@@ -94,21 +105,75 @@ export const geojsonLayer: MapLayerRegistryItem<GeoJSONMapperConfig> = {
     if (true) {
       const s = await getStyleConfigState(config.style);
       styles.push({
-        point: s.maker(s.base),
-        poly: polyStyle(s.base),
+        state: s,
       });
     }
 
+    const polyStyleStrings: string[] = Object.values(GeoJSONPolyStyles);
+    const pointStyleStrings: string[] = Object.values(GeoJSONPointStyles);
+    const lineStyleStrings: string[] = Object.values(GeoJSONLineStyles);
     const vectorLayer = new VectorLayer({
       source,
       style: (feature: FeatureLike) => {
-        const isPoint = feature.getGeometry()?.getType() === 'Point';
+        const featureType = feature.getGeometry()?.getType();
+        const isPoint = featureType === 'Point' || featureType === 'MultiPoint';
+        const isPolygon = featureType === 'Polygon' || featureType === 'MultiPolygon';
+        const isLine = featureType === 'LineString' || featureType === 'MultiLineString';
 
         for (const check of styles) {
           if (check.rule && !checkFeatureMatchesStyleRule(check.rule, feature)) {
             continue;
           }
-          return isPoint ? check.point : check.poly;
+
+          // Support dynamic values
+          if (check.state.fields) {
+            const values = { ...check.state.base };
+            const { text } = check.state.fields;
+
+            if (text) {
+              values.text = `${feature.get(text)}`;
+            }
+            if (isPoint) {
+              return check.state.maker(values);
+            }
+            return polyStyle(values);
+          }
+
+          // Support styling polygons from Feature properties
+          const featureProps = feature.getProperties();
+          if (isPolygon && Object.keys(featureProps).some((property) => polyStyleStrings.includes(property))) {
+            const values: StyleConfigValues = {
+              color: featureProps[GeoJSONPolyStyles.color] ?? check.state.base.color,
+              opacity: featureProps[GeoJSONPolyStyles.opacity] ?? check.state.base.opacity,
+              lineWidth: featureProps[GeoJSONPolyStyles.lineWidth] ?? check.state.base.lineWidth,
+            };
+            return polyStyle(values);
+          } else if (isLine && Object.keys(featureProps).some((property) => lineStyleStrings.includes(property))) {
+            const values: StyleConfigValues = {
+              color: featureProps[GeoJSONLineStyles.color] ?? check.state.base.color,
+              lineWidth: featureProps[GeoJSONLineStyles.lineWidth] ?? check.state.base.lineWidth,
+            };
+            return check.state.maker(values);
+          } else if (isPoint && Object.keys(featureProps).some((property) => pointStyleStrings.includes(property))) {
+            const values: StyleConfigValues = {
+              color: featureProps[GeoJSONPointStyles.color] ?? check.state.base.color,
+              size: featureProps[GeoJSONPointStyles.size] ?? check.state.base.size,
+            };
+            return check.state.maker(values);
+          }
+
+          // Lazy create the style object
+          if (isPoint) {
+            if (!check.point) {
+              check.point = check.state.maker(check.state.base);
+            }
+            return check.point;
+          }
+
+          if (!check.poly) {
+            check.poly = polyStyle(check.state.base);
+          }
+          return check.poly;
         }
         return undefined; // unreachable
       },
@@ -116,9 +181,6 @@ export const geojsonLayer: MapLayerRegistryItem<GeoJSONMapperConfig> = {
 
     return {
       init: () => vectorLayer,
-      update: (data: PanelData) => {
-        console.log('todo... find values matching the ID and update');
-      },
       registerOptionsUI: (builder) => {
         // get properties for first feature to use as ui options
         const layerInfo = features.pipe(
@@ -131,11 +193,7 @@ export const geojsonLayer: MapLayerRegistryItem<GeoJSONMapperConfig> = {
             path: 'config.src',
             name: 'GeoJSON URL',
             settings: {
-              options: [
-                { label: 'public/maps/countries.geojson', value: 'public/maps/countries.geojson' },
-                { label: 'public/maps/usa-states.geojson', value: 'public/maps/usa-states.geojson' },
-                { label: 'public/gazetteer/airports.geojson', value: 'public/gazetteer/airports.geojson' },
-              ],
+              options: getPublicGeoJSONFiles() ?? [],
               allowCustomValue: true,
             },
             defaultValue: defaultOptions.src,
@@ -143,7 +201,7 @@ export const geojsonLayer: MapLayerRegistryItem<GeoJSONMapperConfig> = {
           .addCustomEditor({
             id: 'config.style',
             path: 'config.style',
-            name: 'Default Style',
+            name: 'Default style',
             description: 'The style to apply when no rules above match',
             editor: StyleEditor,
             settings: {
@@ -155,7 +213,7 @@ export const geojsonLayer: MapLayerRegistryItem<GeoJSONMapperConfig> = {
           .addCustomEditor({
             id: 'config.rules',
             path: 'config.rules',
-            name: 'Style Rules',
+            name: 'Style rules',
             description: 'Apply styles based on feature properties',
             editor: GeomapStyleRulesEditor,
             settings: {

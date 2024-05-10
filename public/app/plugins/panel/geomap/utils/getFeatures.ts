@@ -1,50 +1,8 @@
-import { DataFrame, SelectableValue } from '@grafana/data';
-import { Feature } from 'ol';
 import { FeatureLike } from 'ol/Feature';
-import { Point } from 'ol/geom';
-import { GeometryTypeId, StyleConfigState } from '../style/types';
-import { LocationInfo } from './location';
 
-export const getFeatures = (
-  frame: DataFrame,
-  info: LocationInfo,
-  style: StyleConfigState
-): Array<Feature<Point>> | undefined => {
-  const features: Array<Feature<Point>> = [];
-  const { dims } = style;
-  const values = { ...style.base };
+import { SelectableValue } from '@grafana/data';
 
-  // Map each data value into new points
-  for (let i = 0; i < frame.length; i++) {
-    // Create a new Feature for each point returned from dataFrameToPoints
-    const dot = new Feature(info.points[i]);
-    dot.setProperties({
-      frame,
-      rowIndex: i,
-    });
-
-    // Update values used in dynamic styles
-    if (dims) {
-      if (dims.color) {
-        values.color = dims.color.get(i);
-      }
-      if (dims.size) {
-        values.size = dims.size.get(i);
-      }
-      if (dims.rotation) {
-        values.rotation = dims.rotation.get(i);
-      }
-      if (dims.text) {
-        values.text = dims.text.get(i);
-      }
-
-      dot.setStyle(style.maker(values));
-    }
-    features.push(dot);
-  }
-
-  return features;
-};
+import { GeometryTypeId } from '../style/types';
 
 export interface LayerContentInfo {
   geometryType: GeometryTypeId;
@@ -55,7 +13,7 @@ export function getLayerPropertyInfo(features: FeatureLike[]): LayerContentInfo 
   const types = new Set<string>();
   const props = new Set<string>();
   features.some((feature, idx) => {
-    for (const key of Object.keys(feature.getProperties())) {
+    for (const key in feature.getProperties()) {
       if (key === 'geometry') {
         continue;
       }

@@ -1,80 +1,56 @@
-import React, { useCallback, useMemo } from 'react';
-import { DataFrame, FieldType, PanelProps } from '@grafana/data';
-import { TooltipPlugin, useTheme2, ZoomPlugin, usePanelContext } from '@grafana/ui';
-import { TimelineMode, TimelineOptions } from './types';
-import { TimelineChart } from './TimelineChart';
-import { prepareTimelineFields, prepareTimelineLegendItems } from './utils';
-import { StateTimelineTooltip } from './StateTimelineTooltip';
-import { getLastStreamingDataFramePacket } from '@grafana/data/src/dataframe/StreamingDataFrame';
+import React, { useMemo, useState } from 'react';
 
-interface TimelinePanelProps extends PanelProps<TimelineOptions> {}
+import { DashboardCursorSync, PanelProps } from '@grafana/data';
+import { getLastStreamingDataFramePacket } from '@grafana/data/src/dataframe/StreamingDataFrame';
+import { EventBusPlugin, TooltipDisplayMode, TooltipPlugin2, usePanelContext, useTheme2 } from '@grafana/ui';
+import { TimeRange2, TooltipHoverMode } from '@grafana/ui/src/components/uPlot/plugins/TooltipPlugin2';
+import { TimelineChart } from 'app/core/components/TimelineChart/TimelineChart';
+import {
+  prepareTimelineFields,
+  prepareTimelineLegendItems,
+  TimelineMode,
+} from 'app/core/components/TimelineChart/utils';
+
+import { AnnotationsPlugin2 } from '../timeseries/plugins/AnnotationsPlugin2';
+import { OutsideRangePlugin } from '../timeseries/plugins/OutsideRangePlugin';
+import { getTimezones, isTooltipScrollable } from '../timeseries/utils';
+
+import { StateTimelineTooltip2 } from './StateTimelineTooltip2';
+import { Options } from './panelcfg.gen';
+
+interface TimelinePanelProps extends PanelProps<Options> {}
 
 /**
  * @alpha
  */
-export const StateTimelinePanel: React.FC<TimelinePanelProps> = ({
+export const StateTimelinePanel = ({
   data,
   timeRange,
   timeZone,
   options,
   width,
   height,
+  replaceVariables,
   onChangeTimeRange,
-}) => {
+}: TimelinePanelProps) => {
   const theme = useTheme2();
-  const { sync } = usePanelContext();
 
-  const { frames, warn } = useMemo(() => prepareTimelineFields(data?.series, options.mergeValues ?? true, theme), [
-    data,
-    options.mergeValues,
-    theme,
-  ]);
+  // temp range set for adding new annotation set by TooltipPlugin2, consumed by AnnotationPlugin2
+  const [newAnnotationRange, setNewAnnotationRange] = useState<TimeRange2 | null>(null);
+  const { sync, eventsScope, canAddAnnotations, dataLinkPostProcessor, eventBus } = usePanelContext();
+  const cursorSync = sync?.() ?? DashboardCursorSync.Off;
 
-  const legendItems = useMemo(() => prepareTimelineLegendItems(frames, options.legend, theme), [
-    frames,
-    options.legend,
-    theme,
-  ]);
-
-  const renderCustomTooltip = useCallback(
-    (alignedData: DataFrame, seriesIdx: number | null, datapointIdx: number | null) => {
-      const data = frames ?? [];
-      // Count value fields in the state-timeline-ready frame
-      const valueFieldsCount = data.reduce(
-        (acc, frame) => acc + frame.fields.filter((field) => field.type !== FieldType.time).length,
-        0
-      );
-
-      // Not caring about multi mode in StateTimeline
-      if (seriesIdx === null || datapointIdx === null) {
-        return null;
-      }
-
-      /**
-       * There could be a case when the tooltip shows a data from one of a multiple query and the other query finishes first
-       * from refreshing. This causes data to be out of sync. alignedData - 1 because Time field doesn't count.
-       * Render nothing in this case to prevent error.
-       * See https://github.com/grafana/support-escalations/issues/932
-       */
-      if (
-        (!alignedData.meta?.transformations?.length && alignedData.fields.length - 1 !== valueFieldsCount) ||
-        !alignedData.fields[seriesIdx]
-      ) {
-        return null;
-      }
-
-      return (
-        <StateTimelineTooltip
-          data={data}
-          alignedData={alignedData}
-          seriesIdx={seriesIdx}
-          datapointIdx={datapointIdx}
-          timeZone={timeZone}
-        />
-      );
-    },
-    [timeZone, frames]
+  const { frames, warn } = useMemo(
+    () => prepareTimelineFields(data.series, options.mergeValues ?? true, timeRange, theme),
+    [data.series, options.mergeValues, timeRange, theme]
   );
+
+  const legendItems = useMemo(
+    () => prepareTimelineLegendItems(frames, options.legend, theme),
+    [frames, options.legend, theme]
+  );
+
+  const timezones = useMemo(() => getTimezones(options.timezone, timeZone), [options.timezone, timeZone]);
 
   if (!frames || warn) {
     return (
@@ -90,6 +66,7 @@ export const StateTimelinePanel: React.FC<TimelinePanelProps> = ({
       // console.log('STREAM Packet', packet);
     }
   }
+  const enableAnnotationCreation = Boolean(canAddAnnotations && canAddAnnotations());
 
   return (
     <TimelineChart
@@ -97,25 +74,75 @@ export const StateTimelinePanel: React.FC<TimelinePanelProps> = ({
       frames={frames}
       structureRev={data.structureRev}
       timeRange={timeRange}
-      timeZone={timeZone}
+      timeZone={timezones}
       width={width}
       height={height}
       legendItems={legendItems}
       {...options}
       mode={TimelineMode.Changes}
+      replaceVariables={replaceVariables}
+      dataLinkPostProcessor={dataLinkPostProcessor}
+      cursorSync={cursorSync}
     >
-      {(config, alignedFrame) => {
+      {(builder, alignedFrame) => {
         return (
           <>
-            <ZoomPlugin config={config} onZoom={onChangeTimeRange} />
-            <TooltipPlugin
-              data={alignedFrame}
-              sync={sync}
-              config={config}
-              mode={options.tooltip.mode}
+            {cursorSync !== DashboardCursorSync.Off && (
+              <EventBusPlugin config={builder} eventBus={eventBus} frame={alignedFrame} />
+            )}
+            {options.tooltip.mode !== TooltipDisplayMode.None && (
+              <TooltipPlugin2
+                config={builder}
+                hoverMode={
+                  options.tooltip.mode === TooltipDisplayMode.Multi ? TooltipHoverMode.xAll : TooltipHoverMode.xOne
+                }
+                queryZoom={onChangeTimeRange}
+                syncMode={cursorSync}
+                syncScope={eventsScope}
+                render={(u, dataIdxs, seriesIdx, isPinned, dismiss, timeRange2, viaSync) => {
+                  if (enableAnnotationCreation && timeRange2 != null) {
+                    setNewAnnotationRange(timeRange2);
+                    dismiss();
+                    return;
+                  }
+
+                  const annotate = () => {
+                    let xVal = u.posToVal(u.cursor.left!, 'x');
+
+                    setNewAnnotationRange({ from: xVal, to: xVal });
+                    dismiss();
+                  };
+
+                  return (
+                    <StateTimelineTooltip2
+                      frames={frames ?? []}
+                      seriesFrame={alignedFrame}
+                      dataIdxs={dataIdxs}
+                      seriesIdx={seriesIdx}
+                      mode={viaSync ? TooltipDisplayMode.Multi : options.tooltip.mode}
+                      sortOrder={options.tooltip.sort}
+                      isPinned={isPinned}
+                      timeRange={timeRange}
+                      annotate={enableAnnotationCreation ? annotate : undefined}
+                      withDuration={true}
+                      scrollable={isTooltipScrollable(options.tooltip)}
+                      maxHeight={options.tooltip.maxHeight}
+                    />
+                  );
+                }}
+                maxWidth={options.tooltip.maxWidth}
+              />
+            )}
+            {/* Renders annotations */}
+            <AnnotationsPlugin2
+              annotations={data.annotations ?? []}
+              config={builder}
               timeZone={timeZone}
-              renderTooltip={renderCustomTooltip}
+              newRange={newAnnotationRange}
+              setNewRange={setNewAnnotationRange}
+              canvasRegionRendering={false}
             />
+            <OutsideRangePlugin config={builder} onChangeTimeRange={onChangeTimeRange} />
           </>
         );
       }}

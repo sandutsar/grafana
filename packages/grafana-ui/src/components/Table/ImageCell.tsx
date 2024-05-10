@@ -1,27 +1,57 @@
-import React, { FC } from 'react';
+import React from 'react';
+
 import { getCellLinks } from '../../utils';
+import { DataLinksContextMenu } from '../DataLinks/DataLinksContextMenu';
+
 import { TableCellProps } from './types';
 
-export const ImageCell: FC<TableCellProps> = (props) => {
+const DATALINKS_HEIGHT_OFFSET = 10;
+
+export const ImageCell = (props: TableCellProps) => {
   const { field, cell, tableStyles, row, cellProps } = props;
 
   const displayValue = field.display!(cell.value);
 
-  const { link, onClick } = getCellLinks(field, row);
+  const hasLinks = Boolean(getCellLinks(field, row)?.length);
 
   return (
     <div {...cellProps} className={tableStyles.cellContainer}>
-      {!link && <img src={displayValue.text} className={tableStyles.imageCell} />}
-      {link && (
-        <a
-          href={link.href}
-          onClick={onClick}
-          target={link.target}
-          title={link.title}
-          className={tableStyles.imageCellLink}
+      {!hasLinks && <img src={displayValue.text} className={tableStyles.imageCell} alt="" />}
+      {hasLinks && (
+        <DataLinksContextMenu
+          style={{ height: tableStyles.cellHeight - DATALINKS_HEIGHT_OFFSET, width: 'auto' }}
+          links={() => getCellLinks(field, row) || []}
         >
-          <img src={displayValue.text} className={tableStyles.imageCell} />
-        </a>
+          {(api) => {
+            const img = (
+              <img
+                style={{ height: tableStyles.cellHeight - DATALINKS_HEIGHT_OFFSET, width: 'auto' }}
+                src={displayValue.text}
+                className={tableStyles.imageCell}
+                alt=""
+              />
+            );
+            if (api.openMenu) {
+              return (
+                <div
+                  onClick={api.openMenu}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e: React.KeyboardEvent) => {
+                    if (e.key === 'Enter' && api.openMenu) {
+                      // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/consistent-type-assertions
+                      api.openMenu(e as any);
+                    }
+                  }}
+                >
+                  {img}
+                </div>
+              );
+            } else {
+              return img;
+            }
+          }}
+        </DataLinksContextMenu>
       )}
     </div>
   );

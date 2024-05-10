@@ -1,10 +1,11 @@
-import React from 'react';
 import { css } from '@emotion/css';
+import React from 'react';
 
 import { dateTimeFormatTimeAgo, GrafanaTheme2 } from '@grafana/data';
 import { useStyles2 } from '@grafana/ui';
-import { Version } from '../types';
+
 import { getLatestCompatibleVersion } from '../helpers';
+import { Version } from '../types';
 
 interface Props {
   versions?: Version[];
@@ -25,6 +26,7 @@ export const VersionList = ({ versions = [], installedVersion }: Props) => {
         <tr>
           <th>Version</th>
           <th>Last updated</th>
+          <th>Grafana Dependency</th>
         </tr>
       </thead>
       <tbody>
@@ -45,6 +47,8 @@ export const VersionList = ({ versions = [], installedVersion }: Props) => {
               <td className={isInstalledVersion ? styles.currentVersion : ''}>
                 {dateTimeFormatTimeAgo(version.createdAt)}
               </td>
+              {/* Dependency */}
+              <td className={isInstalledVersion ? styles.currentVersion : ''}>{version.grafanaDependency || 'N/A'}</td>
             </tr>
           );
         })}

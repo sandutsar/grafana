@@ -1,9 +1,10 @@
 import { css } from '@emotion/css';
-import { dateMath, GrafanaTheme2, intervalToAbbreviatedDurationString } from '@grafana/data';
 import React from 'react';
-import { useStyles2 } from '@grafana/ui';
-import SilencedAlertsTable from './SilencedAlertsTable';
 
+import { dateMath, GrafanaTheme2, intervalToAbbreviatedDurationString } from '@grafana/data';
+import { useStyles2 } from '@grafana/ui';
+
+import SilencedAlertsTable from './SilencedAlertsTable';
 import { SilenceTableItem } from './SilencesTable';
 
 interface Props {
@@ -35,15 +36,15 @@ export const SilenceDetails = ({ silence }: Props) => {
 };
 
 const getStyles = (theme: GrafanaTheme2) => ({
-  container: css`
-    display: grid;
-    grid-template-columns: 1fr 9fr;
-    grid-row-gap: 1rem;
-  `,
-  title: css`
-    color: ${theme.colors.text.primary};
-  `,
-  row: css`
-    margin: ${theme.spacing(1, 0)};
-  `,
+  container: css({
+    display: 'grid',
+    gridTemplateColumns: '1fr 9fr',
+    gridRowGap: '1rem',
+  }),
+  title: css({
+    color: theme.colors.text.primary,
+  }),
+  row: css({
+    margin: theme.spacing(1, 0),
+  }),
 });

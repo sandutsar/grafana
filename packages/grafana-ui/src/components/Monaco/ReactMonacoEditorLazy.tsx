@@ -1,6 +1,9 @@
 import React from 'react';
+
 import { useAsyncDependency } from '../../utils/useAsyncDependency';
-import { ErrorWithStack, LoadingPlaceholder } from '..';
+import { ErrorWithStack } from '../ErrorBoundary/ErrorWithStack';
+import { LoadingPlaceholder } from '../LoadingPlaceholder/LoadingPlaceholder';
+
 // we only use import type so it will not be included in the bundle
 import type { ReactMonacoEditorProps } from './types';
 

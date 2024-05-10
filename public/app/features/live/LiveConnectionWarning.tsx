@@ -1,9 +1,10 @@
 import { css } from '@emotion/css';
-import { GrafanaTheme2 } from '@grafana/data';
-import { config, getGrafanaLiveSrv } from '@grafana/runtime';
-import { Alert, stylesFactory } from '@grafana/ui';
 import React, { PureComponent } from 'react';
 import { Unsubscribable } from 'rxjs';
+
+import { GrafanaTheme2, OrgRole } from '@grafana/data';
+import { config, getGrafanaLiveSrv } from '@grafana/runtime';
+import { Alert, stylesFactory } from '@grafana/ui';
 import { contextSrv } from 'app/core/services/context_srv';
 
 export interface Props {}
@@ -45,7 +46,7 @@ export class LiveConnectionWarning extends PureComponent<Props, State> {
   render() {
     const { show } = this.state;
     if (show) {
-      if (!contextSrv.isSignedIn || !config.liveEnabled || contextSrv.user.orgRole === '') {
+      if (!contextSrv.isSignedIn || !config.liveEnabled || contextSrv.user.orgRole === OrgRole.None) {
         return null; // do not show the warning for anonymous users or ones with no org (and /login page etc)
       }
 
@@ -71,10 +72,8 @@ const getStyle = stylesFactory((theme: GrafanaTheme2) => {
       margin: 16px;
     `,
     warn: css`
-      border: 2px solid ${theme.colors.warning.main};
       max-width: 400px;
       margin: auto;
-      height: 3em;
     `,
   };
 });

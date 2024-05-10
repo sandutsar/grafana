@@ -1,6 +1,7 @@
-import { BackendSrvRequest } from '@grafana/runtime';
 import { omitBy } from 'lodash';
+
 import { deprecationWarning } from '@grafana/data';
+import { BackendSrvRequest } from '@grafana/runtime';
 
 export const parseInitFromOptions = (options: BackendSrvRequest): RequestInit => {
   const method = options.method;
@@ -88,6 +89,9 @@ export const parseBody = (options: BackendSrvRequest, isAppJson: boolean) => {
   if (!options.data || typeof options.data === 'string') {
     return options.data;
   }
+  if (options.data instanceof Blob) {
+    return options.data;
+  }
 
   return isAppJson ? JSON.stringify(options.data) : new URLSearchParams(options.data);
 };
@@ -99,16 +103,29 @@ export async function parseResponseBody<T>(
   if (responseType) {
     switch (responseType) {
       case 'arraybuffer':
-        return response.arrayBuffer() as any;
+        // this specifically returns a Promise<ArrayBuffer>
+        // TODO refactor this function to remove the type assertions
+        return response.arrayBuffer() as Promise<T>;
 
       case 'blob':
-        return response.blob() as any;
+        // this specifically returns a Promise<Blob>
+        // TODO refactor this function to remove the type assertions
+        return response.blob() as Promise<T>;
 
       case 'json':
-        return response.json();
+        // An empty string is not a valid JSON.
+        // Sometimes (unfortunately) our APIs declare their Content-Type as JSON, however they return an empty body.
+        if (response.headers.get('Content-Length') === '0') {
+          console.warn(`${response.url} returned an invalid JSON`);
+          return {} as T;
+        }
+
+        return await response.json();
 
       case 'text':
-        return response.text() as any;
+        // this specifically returns a Promise<string>
+        // TODO refactor this function to remove the type assertions
+        return response.text() as Promise<T>;
     }
   }
 
@@ -116,10 +133,10 @@ export async function parseResponseBody<T>(
   try {
     return JSON.parse(textData); // majority of the requests this will be something that can be parsed
   } catch {}
-  return textData as any;
+  return textData as T;
 }
 
-export function serializeParams(data: Record<string, any>): string {
+function serializeParams(data: Record<string, any>): string {
   return Object.keys(data)
     .map((key) => {
       const value = data[key];

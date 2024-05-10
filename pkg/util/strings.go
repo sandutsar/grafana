@@ -1,6 +1,7 @@
 package util
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"regexp"
@@ -8,6 +9,8 @@ import (
 	"time"
 	"unicode"
 )
+
+var stringListItemMatcher = regexp.MustCompile(`"[^"]+"|[^,\t\n\v\f\r ]+`)
 
 // StringsFallback2 returns the first of two not empty strings.
 func StringsFallback2(val1 string, val2 string) string {
@@ -28,13 +31,29 @@ func stringsFallback(vals ...string) string {
 	return ""
 }
 
-// SplitString splits a string by commas or empty spaces.
+// SplitString splits a string and returns a list of strings. It supports JSON list syntax and strings separated by commas or spaces.
+// It supports quoted strings with spaces, e.g. "foo bar", "baz".
 func SplitString(str string) []string {
 	if len(str) == 0 {
 		return []string{}
 	}
 
-	return regexp.MustCompile("[, ]+").Split(str, -1)
+	// JSON list syntax support
+	if strings.Index(strings.TrimSpace(str), "[") == 0 {
+		var res []string
+		err := json.Unmarshal([]byte(str), &res)
+		if err != nil {
+			return []string{}
+		}
+		return res
+	}
+
+	var result []string
+	matches := stringListItemMatcher.FindAllString(str, -1)
+	for _, match := range matches {
+		result = append(result, strings.Trim(match, "\""))
+	}
+	return result
 }
 
 // GetAgeString returns a string representing certain time from years to minutes.
@@ -117,4 +136,18 @@ func Capitalize(s string) string {
 	r := []rune(s)
 	r[0] = unicode.ToUpper(r[0])
 	return string(r)
+}
+
+func ByteCountSI(b int64) string {
+	const unit = 1000
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB",
+		float64(b)/float64(div), "kMGTPE"[exp])
 }

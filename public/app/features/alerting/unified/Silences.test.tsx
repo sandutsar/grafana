@@ -1,42 +1,41 @@
 import React from 'react';
-import { render, waitFor } from '@testing-library/react';
-import { locationService, setDataSourceSrv } from '@grafana/runtime';
-import { dateTime } from '@grafana/data';
-import { Provider } from 'react-redux';
-import { Router } from 'react-router-dom';
-import { fetchSilences, fetchAlerts, createOrUpdateSilence } from './api/alertmanager';
-import { typeAsJestMock } from 'test/helpers/typeAsJestMock';
-import { configureStore } from 'app/store/configureStore';
-import Silences from './Silences';
-import { mockAlertmanagerAlert, mockDataSource, MockDataSourceSrv, mockSilence } from './mocks';
-import { DataSourceType } from './utils/datasource';
-import { parseMatchers } from './utils/alertmanager';
-import { AlertState, MatcherOperator } from 'app/plugins/datasource/alertmanager/types';
+import { render, waitFor, userEvent, screen } from 'test/test-utils';
 import { byLabelText, byPlaceholderText, byRole, byTestId, byText } from 'testing-library-selector';
-import userEvent from '@testing-library/user-event';
 
-jest.mock('./api/alertmanager');
+import { dateTime } from '@grafana/data';
+import { selectors } from '@grafana/e2e-selectors';
+import { config, locationService, setDataSourceSrv } from '@grafana/runtime';
+import { setupMswServer } from 'app/features/alerting/unified/mockApi';
+import {
+  MOCK_DATASOURCE_UID_BROKEN_ALERTMANAGER,
+  MOCK_DATASOURCE_NAME_BROKEN_ALERTMANAGER,
+} from 'app/features/alerting/unified/mocks/datasources';
+import { waitForServerRequest } from 'app/features/alerting/unified/mocks/server/events';
+import { silenceCreateHandler } from 'app/features/alerting/unified/mocks/silences';
+import { MatcherOperator } from 'app/plugins/datasource/alertmanager/types';
+import { AccessControlAction } from 'app/types';
+
+import Silences from './Silences';
+import { grantUserPermissions, MOCK_SILENCE_ID_EXISTING, mockDataSource, MockDataSourceSrv } from './mocks';
+import { AlertmanagerProvider } from './state/AlertmanagerContext';
+import { setupDataSources } from './testSetup/datasources';
+import { DataSourceType } from './utils/datasource';
+
+jest.mock('app/core/services/context_srv');
 
 const TEST_TIMEOUT = 60000;
 
-const mocks = {
-  api: {
-    fetchSilences: typeAsJestMock(fetchSilences),
-    fetchAlerts: typeAsJestMock(fetchAlerts),
-    createOrUpdateSilence: typeAsJestMock(createOrUpdateSilence),
-  },
-};
-
 const renderSilences = (location = '/alerting/silences/') => {
-  const store = configureStore();
   locationService.push(location);
-
   return render(
-    <Provider store={store}>
-      <Router history={locationService.getHistory()}>
-        <Silences />
-      </Router>
-    </Provider>
+    <AlertmanagerProvider accessType="instance">
+      <Silences />
+    </AlertmanagerProvider>,
+    {
+      historyOptions: {
+        initialEntries: [location],
+      },
+    }
   );
 };
 
@@ -45,53 +44,74 @@ const dataSources = {
     name: 'Alertmanager',
     type: DataSourceType.Alertmanager,
   }),
+  [MOCK_DATASOURCE_NAME_BROKEN_ALERTMANAGER]: mockDataSource({
+    uid: MOCK_DATASOURCE_UID_BROKEN_ALERTMANAGER,
+    name: MOCK_DATASOURCE_NAME_BROKEN_ALERTMANAGER,
+    type: DataSourceType.Alertmanager,
+  }),
 };
 
 const ui = {
-  silencesTable: byTestId('dynamic-table'),
+  notExpiredTable: byTestId('not-expired-table'),
+  expiredTable: byTestId('expired-table'),
+  expiredCaret: byText(/expired silences \(/i),
+  silencesTags: byLabelText(/tags/i),
   silenceRow: byTestId('row'),
   silencedAlertCell: byTestId('alerts'),
+  addSilenceButton: byRole('link', { name: /add silence/i }),
   queryBar: byPlaceholderText('Search'),
+  existingSilenceNotFound: byRole('alert', { name: /existing silence .* not found/i }),
   editor: {
-    timeRange: byLabelText('Timepicker', { exact: false }),
+    timeRange: byTestId(selectors.components.TimePicker.openButton),
     durationField: byLabelText('Duration'),
     durationInput: byRole('textbox', { name: /duration/i }),
     matchersField: byTestId('matcher'),
     matcherName: byPlaceholderText('label'),
     matcherValue: byPlaceholderText('value'),
     comment: byPlaceholderText('Details about the silence'),
-    createdBy: byPlaceholderText('User'),
     matcherOperatorSelect: byLabelText('operator'),
     matcherOperator: (operator: MatcherOperator) => byText(operator, { exact: true }),
     addMatcherButton: byRole('button', { name: 'Add matcher' }),
-    submit: byText('Submit'),
+    submit: byText(/save silence/i),
+    createdBy: byText(/created by \*/i),
   },
 };
 
 const resetMocks = () => {
   jest.resetAllMocks();
-  mocks.api.fetchSilences.mockImplementation(() => {
-    return Promise.resolve([
-      mockSilence({ id: '12345' }),
-      mockSilence({ id: '67890', matchers: parseMatchers('foo!=bar'), comment: 'Catch all' }),
-    ]);
-  });
 
-  mocks.api.fetchAlerts.mockImplementation(() => {
-    return Promise.resolve([
-      mockAlertmanagerAlert({
-        labels: { foo: 'bar' },
-        status: { state: AlertState.Suppressed, silencedBy: ['12345'], inhibitedBy: [] },
-      }),
-      mockAlertmanagerAlert({
-        labels: { foo: 'buzz' },
-        status: { state: AlertState.Suppressed, silencedBy: ['67890'], inhibitedBy: [] },
-      }),
-    ]);
-  });
-
-  mocks.api.createOrUpdateSilence.mockResolvedValue(mockSilence());
+  grantUserPermissions([
+    AccessControlAction.AlertingInstanceRead,
+    AccessControlAction.AlertingInstanceCreate,
+    AccessControlAction.AlertingInstanceUpdate,
+    AccessControlAction.AlertingInstancesExternalRead,
+    AccessControlAction.AlertingInstancesExternalWrite,
+  ]);
 };
+
+const setUserLogged = (isLogged: boolean) => {
+  config.bootData.user.isSignedIn = isLogged;
+  config.bootData.user.name = isLogged ? 'admin' : '';
+};
+
+const enterSilenceLabel = async (index: number, name: string, matcher: MatcherOperator, value: string) => {
+  const user = userEvent.setup();
+  await user.type(ui.editor.matcherName.getAll()[index], name);
+  await user.type(ui.editor.matcherOperatorSelect.getAll()[index], matcher);
+  await user.tab();
+  await user.type(ui.editor.matcherValue.getAll()[index], value);
+};
+
+const addAdditionalMatcher = async () => {
+  const user = userEvent.setup();
+  await user.click(ui.editor.addMatcherButton.get());
+};
+
+setupMswServer();
+
+beforeEach(() => {
+  setupDataSources(dataSources.am, dataSources[MOCK_DATASOURCE_NAME_BROKEN_ALERTMANAGER]);
+});
 
 describe('Silences', () => {
   beforeAll(resetMocks);
@@ -104,16 +124,29 @@ describe('Silences', () => {
   it(
     'loads and shows silences',
     async () => {
+      const user = userEvent.setup();
       renderSilences();
-      await waitFor(() => expect(mocks.api.fetchSilences).toHaveBeenCalled());
-      await waitFor(() => expect(mocks.api.fetchAlerts).toHaveBeenCalled());
 
-      expect(ui.silencesTable.query()).not.toBeNull();
+      expect(await ui.notExpiredTable.find()).toBeInTheDocument();
 
-      const silences = ui.silenceRow.queryAll();
-      expect(silences).toHaveLength(2);
-      expect(silences[0]).toHaveTextContent('foo=bar');
-      expect(silences[1]).toHaveTextContent('foo!=bar');
+      await user.click(ui.expiredCaret.get());
+      expect(ui.expiredTable.get()).toBeInTheDocument();
+
+      const allSilences = ui.silenceRow.queryAll();
+      expect(allSilences).toHaveLength(3);
+      expect(allSilences[0]).toHaveTextContent('foo=bar');
+      expect(allSilences[1]).toHaveTextContent('foo!=bar');
+      expect(allSilences[2]).toHaveTextContent('foo=bar');
+
+      await user.click(ui.expiredCaret.get());
+
+      expect(ui.notExpiredTable.get()).toBeInTheDocument();
+      expect(ui.expiredTable.query()).not.toBeInTheDocument();
+
+      const activeSilences = ui.silenceRow.queryAll();
+      expect(activeSilences).toHaveLength(2);
+      expect(activeSilences[0]).toHaveTextContent('foo=bar');
+      expect(activeSilences[1]).toHaveTextContent('foo!=bar');
     },
     TEST_TIMEOUT
   );
@@ -121,25 +154,13 @@ describe('Silences', () => {
   it(
     'shows the correct number of silenced alerts',
     async () => {
-      mocks.api.fetchAlerts.mockImplementation(() => {
-        return Promise.resolve([
-          mockAlertmanagerAlert({
-            labels: { foo: 'bar', buzz: 'bazz' },
-            status: { state: AlertState.Suppressed, silencedBy: ['12345'], inhibitedBy: [] },
-          }),
-          mockAlertmanagerAlert({
-            labels: { foo: 'bar', buzz: 'bazz' },
-            status: { state: AlertState.Suppressed, silencedBy: ['12345'], inhibitedBy: [] },
-          }),
-        ]);
-      });
-
       renderSilences();
-      await waitFor(() => expect(mocks.api.fetchSilences).toHaveBeenCalled());
-      await waitFor(() => expect(mocks.api.fetchAlerts).toHaveBeenCalled());
 
-      const silencedAlertRows = ui.silencedAlertCell.getAll(ui.silencesTable.get());
-      expect(silencedAlertRows).toHaveLength(2);
+      const notExpiredTable = await ui.notExpiredTable.find();
+
+      expect(notExpiredTable).toBeInTheDocument();
+
+      const silencedAlertRows = await ui.silencedAlertCell.findAll(notExpiredTable);
       expect(silencedAlertRows[0]).toHaveTextContent('2');
       expect(silencedAlertRows[1]).toHaveTextContent('0');
     },
@@ -149,35 +170,67 @@ describe('Silences', () => {
   it(
     'filters silences by matchers',
     async () => {
+      const user = userEvent.setup();
       renderSilences();
-      await waitFor(() => expect(mocks.api.fetchSilences).toHaveBeenCalled());
-      await waitFor(() => expect(mocks.api.fetchAlerts).toHaveBeenCalled());
 
-      const queryBar = ui.queryBar.get();
-      userEvent.paste(queryBar, 'foo=bar');
+      const queryBar = await ui.queryBar.find();
+      await user.type(queryBar, 'foo=bar');
 
-      await waitFor(() => expect(ui.silenceRow.getAll()).toHaveLength(1));
+      await waitFor(() => expect(ui.silenceRow.getAll()).toHaveLength(2));
     },
     TEST_TIMEOUT
   );
+
+  it('shows creating a silence button for users with access', async () => {
+    renderSilences();
+
+    expect(await ui.addSilenceButton.find()).toBeInTheDocument();
+  });
+
+  it('hides actions for creating a silence for users without access', async () => {
+    grantUserPermissions([AccessControlAction.AlertingInstanceRead, AccessControlAction.AlertingInstancesExternalRead]);
+
+    renderSilences();
+
+    const notExpiredTable = await ui.notExpiredTable.find();
+
+    expect(notExpiredTable).toBeInTheDocument();
+
+    expect(ui.addSilenceButton.query()).not.toBeInTheDocument();
+  });
+
+  it('handles error case when broken alertmanager is used', async () => {
+    renderSilences(`/alerting/silences?alertmanager=${encodeURIComponent(MOCK_DATASOURCE_NAME_BROKEN_ALERTMANAGER)}`);
+    expect(await screen.findByText(/error loading silences/i)).toBeInTheDocument();
+  });
 });
 
-describe('Silence edit', () => {
+describe('Silence create/edit', () => {
   const baseUrlPath = '/alerting/silence/new';
   beforeAll(resetMocks);
   afterEach(resetMocks);
 
   beforeEach(() => {
-    setDataSourceSrv(new MockDataSourceSrv(dataSources));
+    setUserLogged(true);
   });
 
+  it('Should not render createdBy if user is logged in and has a name', async () => {
+    renderSilences(baseUrlPath);
+    await waitFor(() => expect(ui.editor.createdBy.query()).not.toBeInTheDocument());
+  });
+  it('Should render createdBy if user is not logged or has no name', async () => {
+    setUserLogged(false);
+    renderSilences(baseUrlPath);
+    await waitFor(() => expect(ui.editor.createdBy.get()).toBeInTheDocument());
+  });
   it(
     'prefills the matchers field with matchers params',
     async () => {
-      renderSilences(
-        `${baseUrlPath}?matchers=${encodeURIComponent('foo=bar,bar=~ba.+,hello!=world,cluster!~us-central.*')}`
-      );
-      await waitFor(() => expect(ui.editor.durationField.query()).not.toBeNull());
+      const matchersParams = ['foo=bar', 'bar=~ba.+', 'hello!=world', 'cluster!~us-central.*'];
+      const matchersQueryString = matchersParams.map((matcher) => `matcher=${encodeURIComponent(matcher)}`).join('&');
+
+      renderSilences(`${baseUrlPath}?${matchersQueryString}`);
+      expect(await ui.editor.durationField.find()).toBeInTheDocument();
 
       const matchers = ui.editor.matchersField.queryAll();
       expect(matchers).toHaveLength(4);
@@ -204,8 +257,11 @@ describe('Silence edit', () => {
   it(
     'creates a new silence',
     async () => {
-      renderSilences(baseUrlPath);
-      await waitFor(() => expect(ui.editor.durationField.query()).not.toBeNull());
+      const user = userEvent.setup();
+      renderSilences(`${baseUrlPath}?alertmanager=Alertmanager`);
+      expect(await ui.editor.durationField.find()).toBeInTheDocument();
+
+      const postRequest = waitForServerRequest(silenceCreateHandler());
 
       const start = new Date();
       const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
@@ -213,58 +269,85 @@ describe('Silence edit', () => {
       const startDateString = dateTime(start).format('YYYY-MM-DD');
       const endDateString = dateTime(end).format('YYYY-MM-DD');
 
-      userEvent.clear(ui.editor.durationInput.get());
-      userEvent.type(ui.editor.durationInput.get(), '1d');
+      await user.clear(ui.editor.durationInput.get());
+      await user.type(ui.editor.durationInput.get(), '1d');
 
       await waitFor(() => expect(ui.editor.durationInput.query()).toHaveValue('1d'));
       await waitFor(() => expect(ui.editor.timeRange.get()).toHaveTextContent(startDateString));
       await waitFor(() => expect(ui.editor.timeRange.get()).toHaveTextContent(endDateString));
 
-      userEvent.type(ui.editor.matcherName.get(), 'foo');
-      userEvent.type(ui.editor.matcherOperatorSelect.get(), '=');
-      userEvent.tab();
-      userEvent.type(ui.editor.matcherValue.get(), 'bar');
+      await enterSilenceLabel(0, 'foo', MatcherOperator.equal, 'bar');
 
-      // TODO remove skipPointerEventsCheck once https://github.com/jsdom/jsdom/issues/3232 is fixed
-      userEvent.click(ui.editor.addMatcherButton.get(), undefined, { skipPointerEventsCheck: true });
-      userEvent.type(ui.editor.matcherName.getAll()[1], 'bar');
-      userEvent.type(ui.editor.matcherOperatorSelect.getAll()[1], '!=');
-      userEvent.tab();
-      userEvent.type(ui.editor.matcherValue.getAll()[1], 'buzz');
+      await addAdditionalMatcher();
+      await enterSilenceLabel(1, 'bar', MatcherOperator.notEqual, 'buzz');
 
-      // TODO remove skipPointerEventsCheck once https://github.com/jsdom/jsdom/issues/3232 is fixed
-      userEvent.click(ui.editor.addMatcherButton.get(), undefined, { skipPointerEventsCheck: true });
-      userEvent.type(ui.editor.matcherName.getAll()[2], 'region');
-      userEvent.type(ui.editor.matcherOperatorSelect.getAll()[2], '=~');
-      userEvent.tab();
-      userEvent.type(ui.editor.matcherValue.getAll()[2], 'us-west-.*');
+      await addAdditionalMatcher();
+      await enterSilenceLabel(2, 'region', MatcherOperator.regex, 'us-west-.*');
 
-      // TODO remove skipPointerEventsCheck once https://github.com/jsdom/jsdom/issues/3232 is fixed
-      userEvent.click(ui.editor.addMatcherButton.get(), undefined, { skipPointerEventsCheck: true });
-      userEvent.type(ui.editor.matcherName.getAll()[3], 'env');
-      userEvent.type(ui.editor.matcherOperatorSelect.getAll()[3], '!~');
-      userEvent.tab();
-      userEvent.type(ui.editor.matcherValue.getAll()[3], 'dev|staging');
+      await addAdditionalMatcher();
+      await enterSilenceLabel(3, 'env', MatcherOperator.notRegex, 'dev|staging');
 
-      userEvent.type(ui.editor.comment.get(), 'Test');
-      userEvent.type(ui.editor.createdBy.get(), 'Homer Simpson');
+      await user.click(ui.editor.submit.get());
 
-      userEvent.click(ui.editor.submit.get());
+      expect(await ui.notExpiredTable.find()).toBeInTheDocument();
 
-      await waitFor(() =>
-        expect(mocks.api.createOrUpdateSilence).toHaveBeenCalledWith(
-          'grafana',
-          expect.objectContaining({
-            comment: 'Test',
-            createdBy: 'Homer Simpson',
-            matchers: [
-              { isEqual: true, isRegex: false, name: 'foo', value: 'bar' },
-              { isEqual: false, isRegex: false, name: 'bar', value: 'buzz' },
-              { isEqual: true, isRegex: true, name: 'region', value: 'us-west-.*' },
-              { isEqual: false, isRegex: true, name: 'env', value: 'dev|staging' },
-            ],
-          })
-        )
+      const createSilenceRequest = await postRequest;
+      const requestBody = await createSilenceRequest.clone().json();
+      expect(requestBody).toMatchObject(
+        expect.objectContaining({
+          comment: expect.stringMatching(/created (\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/),
+          matchers: [
+            { isEqual: true, isRegex: false, name: 'foo', value: 'bar' },
+            { isEqual: false, isRegex: false, name: 'bar', value: 'buzz' },
+            { isEqual: true, isRegex: true, name: 'region', value: 'us-west-.*' },
+            { isEqual: false, isRegex: true, name: 'env', value: 'dev|staging' },
+          ],
+        })
+      );
+    },
+    TEST_TIMEOUT
+  );
+
+  it('shows an error when existing silence cannot be found', async () => {
+    renderSilences('/alerting/silence/foo-bar/edit');
+
+    expect(await ui.existingSilenceNotFound.find()).toBeInTheDocument();
+  });
+
+  it('populates form with existing silence information', async () => {
+    renderSilences(`/alerting/silence/${MOCK_SILENCE_ID_EXISTING}/edit`);
+
+    // Await the first value to be populated, after which we can expect that all of the other
+    // existing fields have been filled out as well
+    await waitFor(() => expect(ui.editor.matcherName.get()).toHaveValue('foo'));
+    expect(ui.editor.matcherValue.get()).toHaveValue('bar');
+    expect(ui.editor.comment.get()).toHaveValue('Silence noisy alerts');
+  });
+
+  it(
+    'silences page should contain alertmanager parameter after creating a silence',
+    async () => {
+      const user = userEvent.setup();
+
+      const postRequest = waitForServerRequest(silenceCreateHandler());
+
+      renderSilences(`${baseUrlPath}?alertmanager=Alertmanager`);
+      await waitFor(() => expect(ui.editor.durationField.query()).not.toBeNull());
+
+      await enterSilenceLabel(0, 'foo', MatcherOperator.equal, 'bar');
+
+      await user.click(ui.editor.submit.get());
+
+      expect(await ui.notExpiredTable.find()).toBeInTheDocument();
+
+      expect(locationService.getSearch().get('alertmanager')).toBe('Alertmanager');
+
+      const createSilenceRequest = await postRequest;
+      const requestBody = await createSilenceRequest.clone().json();
+      expect(requestBody).toMatchObject(
+        expect.objectContaining({
+          matchers: [{ isEqual: true, isRegex: false, name: 'foo', value: 'bar' }],
+        })
       );
     },
     TEST_TIMEOUT

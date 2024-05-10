@@ -1,19 +1,22 @@
-import React, { FC, useEffect, useMemo, useState } from 'react';
-import { useDispatch } from 'react-redux';
+import { css } from '@emotion/css';
+import React, { useEffect, useMemo } from 'react';
+import { useFormContext, Controller } from 'react-hook-form';
+
+import { GrafanaTheme2, SelectableValue } from '@grafana/data';
+import { Field, useStyles2, VirtualizedSelect } from '@grafana/ui';
+import { useDispatch } from 'app/types';
+
 import { useUnifiedAlertingSelector } from '../../hooks/useUnifiedAlertingSelector';
 import { fetchRulerRulesAction } from '../../state/actions';
 import { RuleFormValues } from '../../types/rule-form';
-import { useFormContext } from 'react-hook-form';
-import { GrafanaTheme2, SelectableValue } from '@grafana/data';
-import { SelectWithAdd } from './SelectWIthAdd';
-import { Field, InputControl, useStyles2 } from '@grafana/ui';
-import { css } from '@emotion/css';
+
+import { checkForPathSeparator } from './util';
 
 interface Props {
   rulesSourceName: string;
 }
 
-export const GroupAndNamespaceFields: FC<Props> = ({ rulesSourceName }) => {
+export const GroupAndNamespaceFields = ({ rulesSourceName }: Props) => {
   const {
     control,
     watch,
@@ -22,8 +25,6 @@ export const GroupAndNamespaceFields: FC<Props> = ({ rulesSourceName }) => {
   } = useFormContext<RuleFormValues>();
 
   const style = useStyles2(getStyle);
-
-  const [customGroup, setCustomGroup] = useState(false);
 
   const rulerRequests = useUnifiedAlertingSelector((state) => state.rulerRules);
   const dispatch = useDispatch();
@@ -55,17 +56,15 @@ export const GroupAndNamespaceFields: FC<Props> = ({ rulesSourceName }) => {
         error={errors.namespace?.message}
         invalid={!!errors.namespace?.message}
       >
-        <InputControl
+        <Controller
           render={({ field: { onChange, ref, ...field } }) => (
-            <SelectWithAdd
+            <VirtualizedSelect
               {...field}
+              allowCustomValue
               className={style.input}
               onChange={(value) => {
                 setValue('group', ''); //reset if namespace changes
-                onChange(value);
-              }}
-              onCustomChange={(custom: boolean) => {
-                custom && setCustomGroup(true);
+                onChange(value.value);
               }}
               options={namespaceOptions}
               width={42}
@@ -75,18 +74,33 @@ export const GroupAndNamespaceFields: FC<Props> = ({ rulesSourceName }) => {
           control={control}
           rules={{
             required: { value: true, message: 'Required.' },
+            validate: {
+              pathSeparator: checkForPathSeparator,
+            },
           }}
         />
       </Field>
       <Field data-testid="group-picker" label="Group" error={errors.group?.message} invalid={!!errors.group?.message}>
-        <InputControl
+        <Controller
           render={({ field: { ref, ...field } }) => (
-            <SelectWithAdd {...field} options={groupOptions} width={42} custom={customGroup} className={style.input} />
+            <VirtualizedSelect
+              {...field}
+              allowCustomValue
+              options={groupOptions}
+              width={42}
+              onChange={(value) => {
+                setValue('group', value.value ?? '');
+              }}
+              className={style.input}
+            />
           )}
           name="group"
           control={control}
           rules={{
             required: { value: true, message: 'Required.' },
+            validate: {
+              pathSeparator: checkForPathSeparator,
+            },
           }}
         />
       </Field>
@@ -95,16 +109,16 @@ export const GroupAndNamespaceFields: FC<Props> = ({ rulesSourceName }) => {
 };
 
 const getStyle = (theme: GrafanaTheme2) => ({
-  flexRow: css`
-    display: flex;
-    flex-direction: row;
-    justify-content: flex-start;
+  flexRow: css({
+    display: 'flex',
+    flexDirection: 'row',
+    justifyContent: 'flex-start',
 
-    & > * + * {
-      margin-left: ${theme.spacing(3)};
-    }
-  `,
-  input: css`
-    width: 330px !important;
-  `,
+    '& > * + *': {
+      marginLeft: theme.spacing(3),
+    },
+  }),
+  input: css({
+    width: '330px !important',
+  }),
 });

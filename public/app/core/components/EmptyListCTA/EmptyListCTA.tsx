@@ -1,7 +1,8 @@
-import React, { MouseEvent } from 'react';
 import { css } from '@emotion/css';
-import { CallToActionCard, Icon, IconName, LinkButton } from '@grafana/ui';
+import React, { MouseEvent } from 'react';
+
 import { selectors } from '@grafana/e2e-selectors';
+import { Button, CallToActionCard, Icon, IconName, LinkButton } from '@grafana/ui';
 
 export interface Props {
   title: string;
@@ -18,16 +19,16 @@ export interface Props {
   infoBoxTitle?: string;
 }
 
-const ctaStyle = css`
-  text-align: center;
-`;
+const ctaStyle = css({
+  textAlign: 'center',
+});
 
-const infoBoxStyles = css`
-  max-width: 700px;
-  margin: 0 auto;
-`;
+const infoBoxStyles = css({
+  maxWidth: '700px',
+  margin: '0 auto',
+});
 
-const EmptyListCTA: React.FunctionComponent<Props> = ({
+const EmptyListCTA = ({
   title,
   buttonIcon,
   buttonLink,
@@ -40,7 +41,7 @@ const EmptyListCTA: React.FunctionComponent<Props> = ({
   proTipTarget,
   infoBox,
   infoBoxTitle,
-}) => {
+}: Props) => {
   const footer = () => {
     return (
       <>
@@ -70,13 +71,14 @@ const EmptyListCTA: React.FunctionComponent<Props> = ({
   };
 
   const ctaElementClassName = !footer()
-    ? css`
-        margin-bottom: 20px;
-      `
+    ? css({
+        marginBottom: '20px',
+      })
     : '';
 
+  const ButtonEl = buttonLink ? LinkButton : Button;
   const ctaElement = (
-    <LinkButton
+    <ButtonEl
       size="lg"
       onClick={onClick}
       href={buttonLink}
@@ -86,7 +88,7 @@ const EmptyListCTA: React.FunctionComponent<Props> = ({
       disabled={buttonDisabled}
     >
       {buttonTitle}
-    </LinkButton>
+    </ButtonEl>
   );
 
   return <CallToActionCard className={ctaStyle} message={title} footer={footer()} callToActionElement={ctaElement} />;

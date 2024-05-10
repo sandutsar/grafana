@@ -1,12 +1,12 @@
 'use strict';
 
-const { merge } = require('webpack-merge');
-const common = require('./webpack.common.js');
+const ReactRefreshWebpackPlugin = require('@pmmmwh/react-refresh-webpack-plugin');
+const MiniCssExtractPlugin = require('mini-css-extract-plugin');
 const path = require('path');
 const { DefinePlugin } = require('webpack');
-const ReactRefreshWebpackPlugin = require('@pmmmwh/react-refresh-webpack-plugin');
-const HtmlWebpackPlugin = require('html-webpack-plugin');
-const MiniCssExtractPlugin = require('mini-css-extract-plugin');
+const { merge } = require('webpack-merge');
+
+const common = require('./webpack.common.js');
 
 module.exports = merge(common, {
   devtool: 'inline-source-map',
@@ -30,9 +30,12 @@ module.exports = merge(common, {
     hot: true,
     open: false,
     port: 3333,
-    proxy: {
-      '!/public/build': 'http://localhost:3000',
-    },
+    proxy: [
+      {
+        context: '!/public/build',
+        target: 'http://localhost:3000',
+      },
+    ],
     static: {
       publicPath: '/public/build/',
     },
@@ -76,15 +79,7 @@ module.exports = merge(common, {
 
   plugins: [
     new MiniCssExtractPlugin({
-      filename: 'grafana.[name].[fullhash].css',
-    }),
-    new HtmlWebpackPlugin({
-      filename: path.resolve(__dirname, '../../public/views/index.html'),
-      template: path.resolve(__dirname, '../../public/views/index-template.html'),
-      hash: true,
-      inject: false,
-      chunksSortMode: 'none',
-      excludeChunks: ['dark', 'light'],
+      filename: 'grafana.[name].[contenthash].css',
     }),
     new ReactRefreshWebpackPlugin(),
     new DefinePlugin({
