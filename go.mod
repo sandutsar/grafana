@@ -182,7 +182,7 @@ require (
 	golang.org/x/oauth2 v0.20.0 // @grafana/identity-access-team
 	golang.org/x/sync v0.7.0 // @grafana/alerting-squad-backend
 	golang.org/x/text v0.15.0 // @grafana/grafana-backend-group
-	golang.org/x/time v0.5.0 // @grafana/grafana-backend-group
+	golang.org/x/time v0.10.0 // @grafana/grafana-backend-group
 	golang.org/x/tools v0.18.0 // @grafana/grafana-as-code
 	gonum.org/v1/gonum v0.12.0 // @grafana/observability-metrics
 	google.golang.org/api v0.176.0 // @grafana/grafana-backend-group
